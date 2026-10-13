@@ -7,5 +7,5 @@ obj/
 *.map
 *.sym
 test/build/
-test/sim/build/
+test/sim/build*/
 __pycache__/
