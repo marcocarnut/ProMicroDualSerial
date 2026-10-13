@@ -12,6 +12,12 @@
 
 #include "ring.h"
 
+/* softuart_tx_start() counters: calls, RX backlog gate closed with data
+ * waiting, batch used up with data waiting, tx ring empty, edge queue
+ * full, transmitter (re)started from idle */
+#define SU_TX_STATS 6
+extern volatile uint16_t su_tx_stats[SU_TX_STATS];
+
 #if PROFILER
 void profiler_init(void);
 /* Begin dumping the results (and reset them) into 'r', in pieces. */

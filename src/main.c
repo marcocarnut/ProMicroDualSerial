@@ -85,7 +85,13 @@ static bridge_t bridge[NUM_PORTS] =
 };
 
 static volatile bool enter_bootloader;
+static bool          led_tx, led_rx;       /* data moved since the last housekeeping */
 static uint32_t      led_tx_until, led_rx_until;
+
+/* Housekeeping (modem lines, errors, line coding / break changes,
+ * notifications, LEDs) runs every HK_TICKS Timer0 ticks (~1 ms) instead of
+ * every main loop iteration; only the data paths run every time. */
+#define HK_TICKS        16
 
 /* ---- LEDs (Pro Micro: RX LED on PB0, TX LED on PD5, both active low) ---- */
 
@@ -99,6 +105,8 @@ static void leds_init(void)
 
 static void leds_task(uint32_t now)
 {
+	if (led_rx) { led_rx_until = now + LED_PULSE; led_rx = false; }
+	if (led_tx) { led_tx_until = now + LED_PULSE; led_tx = false; }
 	if (clock_reached(now, led_rx_until)) PORTB |= _BV(PB0); else PORTB &= ~_BV(PB0);
 	if (clock_reached(now, led_tx_until)) PORTD |= _BV(PD5); else PORTD &= ~_BV(PD5);
 }
@@ -214,7 +222,7 @@ static void usb_to_uart(uint8_t port)
 		while (n--)
 		  r->buf[h++ & RING_MASK] = Endpoint_Read_8();
 		r->head = h;
-		led_tx_until = clock_ticks() + LED_PULSE;
+		led_tx = true;
 	}
 
 	if (!Endpoint_BytesInEndpoint())
@@ -254,7 +262,7 @@ static void uart_to_usb(uint8_t port)
 	r->tail = t;
 	Endpoint_ClearIN();
 
-	led_rx_until = clock_ticks() + LED_PULSE;
+	led_rx = true;
 }
 
 /* Send a SERIAL_STATE notification if something changed and the interrupt
@@ -285,12 +293,30 @@ static void notify_task(uint8_t port)
 
 /* ---- Per port service ---- */
 
-static void bridge_task(uint8_t port, uint32_t now)
+/* Every main loop iteration: the data paths. */
+static inline void bridge_task(uint8_t port)
 {
 	bridge_t*          b = &bridge[port];
 	const uart_port_t* u = b->uart;
 
 	u->task();
+
+	if (USB_DeviceState != DEVICE_STATE_Configured)
+	  return;
+
+	/* new host data is held back while a change is waiting for TX to drain */
+	if (!b->pending)
+	  usb_to_uart(port);
+	if (!b->break_active)
+	  u->tx_start();
+	uart_to_usb(port);
+}
+
+/* Every ~1 ms: modem lines, errors, line coding and break changes. */
+static void bridge_housekeeping(uint8_t port, uint32_t now)
+{
+	bridge_t*          b = &bridge[port];
+	const uart_port_t* u = b->uart;
 
 	if (port == 0)
 	  modem0_task();
@@ -335,16 +361,8 @@ static void bridge_task(uint8_t port, uint32_t now)
 		b->pending &= ~(PEND_CONFIG | PEND_BREAK_ON);
 	}
 
-	if (USB_DeviceState != DEVICE_STATE_Configured)
-	  return;
-
-	/* new host data is held back while a change is waiting for TX to drain */
-	if (!b->pending)
-	  usb_to_uart(port);
-	if (!b->break_active)
-	  u->tx_start();
-	uart_to_usb(port);
-	notify_task(port);
+	if (USB_DeviceState == DEVICE_STATE_Configured)
+	  notify_task(port);
 }
 
 int main(void)
@@ -367,18 +385,29 @@ int main(void)
 	profiler_init();
 	GlobalInterruptEnable();
 
+	uint8_t hk_last = TCNT0;
 	for (;;)
 	{
-		USB_USBTask();
+		/* USB_USBTask() only has work when a SETUP packet is waiting */
+		Endpoint_SelectEndpoint(ENDPOINT_CONTROLEP);
+		if (Endpoint_IsSETUPReceived())
+		  USB_USBTask();
 
-		uint32_t now = clock_ticks();
-		for (uint8_t i = 0; i < NUM_PORTS; i++)
-		  bridge_task(i, now);
-		leds_task(now);
-		profiler_task(bridge[0].uart->rx);
+		bridge_task(0);
+		bridge_task(1);
 
-		if (enter_bootloader)
-		  reboot_to_bootloader();
+		if ((uint8_t)(TCNT0 - hk_last) >= HK_TICKS)
+		{
+			hk_last += HK_TICKS;
+			uint32_t now = clock_ticks();
+			bridge_housekeeping(0, now);
+			bridge_housekeeping(1, now);
+			leds_task(now);
+			profiler_task(bridge[0].uart->rx);
+
+			if (enter_bootloader)
+			  reboot_to_bootloader();
+		}
 	}
 }
 

@@ -46,6 +46,7 @@
 #include "softuart.h"
 #include "softuart_codec.h"
 #include "config.h"
+#include "profiler.h"
 #include "gpio.h"
 
 #if P1_HW_FLOW == FLOW_ON
@@ -378,14 +379,31 @@ check_overrun:
 #define RX_BACKLOG_MAX  12      /* edges */
 #endif
 
+#if PROFILER
+/* why encoding stopped, per call (see profiler.h) */
+volatile uint16_t su_tx_stats[SU_TX_STATS];
+#define TX_STAT(i) do { if (su_tx_stats[i] != 0xFFFF) su_tx_stats[i]++; } while (0)
+#else
+#define TX_STAT(i) do { } while (0)
+#endif
+
 static void softuart_tx_start(void)
 {
 	/* checked once per call: a batch adds at most a few frames' worth of
 	 * edges to the backlog, far from filling the edge ring */
 	uint8_t n = ((uint8_t)(E_HEAD - su_e_tail) <= 2 * RX_BACKLOG_MAX) ? TX_ENCODE_BATCH : 0;
 
-	for (; n && !ring_empty(&tx_ring) && Q_ENTRIES_FREE() >= SU_MAX_EDGES; n--)
+	TX_STAT(0);
+	if (!n && !ring_empty(&tx_ring))
+	  TX_STAT(1);
+
+	for (uint8_t i = 0; i < n; i++)
 	{
+		if (ring_empty(&tx_ring))            { TX_STAT(3); break; }
+		if (Q_ENTRIES_FREE() < SU_MAX_EDGES) { TX_STAT(4); break; }
+		if (PROFILER && i == n - 1 && ring_count(&tx_ring) > 1)
+		  TX_STAT(2);
+
 		uint8_t h = su_encode(&cfg, &enc, ring_get(&tx_ring), bufs.q, su_q_head);
 
 		/* publish the whole frame at once so the ISR never sees half of it */
@@ -402,6 +420,7 @@ static void softuart_tx_start(void)
 		if (!(GPIOR0 & (_BV(TXS_RUN) | _BV(TXS_DRAIN))) && t != su_q_head && !CTS_BLOCKED())
 		{
 			/* the first queued edge is a start bit; begin right away */
+			TX_STAT(5);
 			Q_TAIL  = t + 4;
 			OCR1A   = TCNT1 + TX_LEAD;
 			TCCR1A  = COM_CLEAR;

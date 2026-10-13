@@ -14,6 +14,9 @@
  *   RXGEN=1       drive the soft RX pin from an independent full-rate stream
  *                 instead of looping TX back
  *   PROFILE=file  write a cycles-per-address profile (see profile.py)
+ *   QSTAT=qhead,txring  (data addresses of su_q_head and softuart.c's
+ *                 tx_ring, from avr-nm) sample the soft transmitter's
+ *                 state, queue and tx ring every 500 cycles
  *   TRACE=1, DUMP=n, OCDEBUG=n, STATE=1, GAPS=n: debugging aids
  */
 #include <stdio.h>
@@ -329,6 +332,41 @@ int main(int argc, char** argv)
 		if (pc_rx && pc == pc_rx)
 		  logf_("%10llu  su_rx_frame %02x flags %02x", (unsigned long long)avr->cycle, avr->data[24], avr->data[22]);
 		int state = avr_run(avr);
+		static int qstat = -1;
+		static unsigned qs_qhead, qs_ring;
+		static uint64_t qs_next, qs_hist[3][4][2];
+		if (qstat < 0)
+		  qstat = getenv("QSTAT") && sscanf(getenv("QSTAT"), "%x,%x", &qs_qhead, &qs_ring) == 2;
+		if (qstat && fed < count && avr->cycle >= 300000 && avr->cycle >= qs_next)
+		{
+			qs_next = avr->cycle + 500;
+			uint8_t g0 = avr->data[0x3E], qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
+			int st = (g0 & 1) ? 0 : (g0 & 2) ? 1 : 2;                  /* RUN, DRAIN, IDLE */
+			int q  = (uint8_t)(qh - qt) / 4;
+			int qb = q == 0 ? 0 : q < 12 ? 1 : q < 40 ? 2 : 3;
+			int rb = (uint8_t)(avr->data[qs_ring & 0xFFFF] - avr->data[(qs_ring & 0xFFFF) + 1]) != 0;
+			qs_hist[st][qb][rb]++;
+			/* where the CPU is while the transmitter starves */
+			static FILE* qpc;
+			if (st == 2 && q == 0 && rb && getenv("QSTAT_PC"))
+			{
+				if (!qpc) qpc = fopen(getenv("QSTAT_PC"), "w");
+				fprintf(qpc, "%x\n", avr->pc);
+			}
+		}
+		if (qstat && fed == count && avr->cycle >= end && (!rxgen || avr->cycle > 250000 + rx_nsent * frame + 100000))
+		{
+			static const char* sn[] = { "RUN", "DRAIN", "IDLE" };
+			static const char* qn[] = { "q=0", "q1-11", "q12-39", "q40+" };
+			uint64_t tot = 0;
+			for (int a = 0; a < 3; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) tot += qs_hist[a][b][c];
+			printf("qstat (%% of samples; queue entries, tx ring empty / not):\n");
+			for (int a = 0; a < 3; a++) for (int b = 0; b < 4; b++)
+			  if (qs_hist[a][b][0] + qs_hist[a][b][1])
+			    printf("  %-5s %-6s  ring empty %5.1f%%  ring data %5.1f%%\n", sn[a], qn[b],
+			           100.0 * qs_hist[a][b][0] / tot, 100.0 * qs_hist[a][b][1] / tot);
+			qstat = 0;
+		}
 		static uint64_t prof_to; if (!prof_to) prof_to = getenv("PROFILE_TO") ? strtoull(getenv("PROFILE_TO"), 0, 0) : ~0ULL;
 		if (profiling && c0 >= prof_from && c0 < prof_to && pc / 2 < 16384)
 		  prof[pc / 2] += (uint32_t)(avr->cycle - c0);

@@ -14,8 +14,10 @@ HEX=${2:-ProMicroDualUART.hex}
 if [ -e "$PORT" ]; then
 	echo "Resetting $PORT into the bootloader (1200 baud touch)..."
 	stty -F "$PORT" 1200 hupcl
-	# open + close with HUPCL drops DTR
-	: < "$PORT" || true
+	# open + close with HUPCL drops DTR (if HUPCL was already set, stty's own
+	# close did that and the port may be gone: in a subshell, as a failed
+	# redirection would end the script)
+	( : < "$PORT" ) 2>/dev/null || true
 
 	# wait for the firmware's ports (both of them) to go away, so the
 	# second one isn't mistaken for the bootloader's

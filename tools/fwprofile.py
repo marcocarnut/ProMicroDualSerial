@@ -106,7 +106,7 @@ def main():
     print("traffic: %s at %d, %d bytes each way, %.2f s, data %s" %
           (mode, baud, n if mode != "idle" else 0, dt, "ok" if ok else "MISMATCH"))
 
-    total, buckets, late = 0, [], {}
+    total, buckets, late, stats = 0, [], {}, {}
     for l in lines:
         p = l.split()
         if not p:
@@ -117,6 +117,8 @@ def main():
             buckets.append((int(p[1], 16), int(p[2])))
         elif p[0] == "L":
             late[int(p[1], 16)] = int(p[2])
+        elif p[0] == "S":
+            stats[int(p[1], 16)] = int(p[2])
     if not total:
         sys.exit("no samples")
 
@@ -127,6 +129,10 @@ def main():
     print("samples: %d; held off by non-nestable ISRs / cli: %.1f%%" % (total, 100.0 * held / total))
     print("lateness (16-cycle bins from the fastest): " +
           ", ".join("%d:%d" % (b - base, late[b]) for b in sorted(late)))
+    if stats:
+        print("soft TX encoder, per call: %d calls; stopped by RX backlog gate %d, batch limit %d, "
+              "empty tx ring %d, full edge queue %d; restarts from idle %d (the counts saturate at 65535)"
+              % tuple(stats.get(i, 0) for i in range(6)))
     print()
 
     funcs = attribute(buckets, opt["--elf"])
