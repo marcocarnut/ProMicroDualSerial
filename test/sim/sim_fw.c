@@ -1,9 +1,9 @@
 /*
  * Firmware for the simavr test (no USB): bytes received on USART1 are sent
  * out of the soft UART, and bytes received by the soft UART are sent out of
- * USART1. The harness wires soft TX (PB5) back to soft RX (PD4), so every
+ * USART1. The harness wires soft TX (PC6) back to soft RX (PD4), so every
  * byte fed into USART1 should come back out of it, having gone through the
- * soft UART's encoder, compare ISR, capture ISR and decoder.
+ * soft UART's TX ISR, capture ISR and decoder.
  *
  * Error flags are latched on port D/E pins for the harness to see. The soft
  * UART is built with automatic CTS flow control (P1_HW_FLOW = FLOW_AUTO,

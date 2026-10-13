@@ -1,9 +1,9 @@
 /*
  * simavr harness for sim_fw: feeds bytes into USART1, loops the soft UART's
- * TX pin (PB5) back into its RX/ICP pin (PD4), and checks that
+ * TX pin (PC6, OC3A) back into its RX/ICP pin (PD4), and checks that
  *  - the bytes coming back out of USART1 are the ones fed in,
- *  - the PB5 waveform, decoded independently here, carries the same bytes,
- *  - every PB5 edge lies within a few cycles of its ideal time relative to
+ *  - the TX waveform, decoded independently here, carries the same bytes,
+ *  - every TX edge lies within a few cycles of its ideal time relative to
  *    the start of its frame.
  *
  * usage: harness <fw.elf> <soft baud> <bits> <parity 0-4> <stop 0-2> <pattern> <count>
@@ -14,8 +14,7 @@
  *   RXGEN=1       drive the soft RX pin from an independent full-rate stream
  *                 instead of looping TX back
  *   PROFILE=file  write a cycles-per-address profile (see profile.py)
- *   QSTAT=qhead,txring  (data addresses of su_q_head (su_txw_head with
- *                 TXTIMER=3) and softuart.c's
+ *   QSTAT=qhead,txring  (data addresses of su_txw_head and softuart.c's
  *                 tx_ring, from avr-nm) sample the soft transmitter's
  *                 state, queue and tx ring every 500 cycles
  *   TRACE=1, DUMP=n, OCDEBUG=n, STATE=1, GAPS=n: debugging aids
@@ -70,19 +69,19 @@ static void dump_log(void)
 }
 
 
-/* PB5 edge log */
+/* TX edge log */
 static uint64_t edge_t[2000000];
 static uint8_t  edge_v[2000000];
 static int      nedges;
 
 /*
- * OC1A is rebuilt from the timer's compare output IRQ. simavr 1.6 also
- * drove that IRQ to the inverse of the COM1A action on every OCR1x write
+ * OC3A is rebuilt from the timer's compare output IRQ. simavr 1.6 also
+ * drove that IRQ to the inverse of the COMnA action on every OCRnx write
  * and overflow (fixed in 1.8); such drives are the opposite of what the
- * current COM1A mode does on a match, so they are filtered out. Harmless
+ * current COM3A mode does on a match, so they are filtered out. Harmless
  * with newer simavr.
  */
-#define TCCR1A_ADDR 0x80
+#define TCCR3A_ADDR 0x90
 static int txline = 1;
 
 /*
@@ -100,11 +99,9 @@ static avr_cycle_count_t loop_cb(struct avr_t* a, avr_cycle_count_t when, void* 
 	return 0;
 }
 
-static int tccra_addr = TCCR1A_ADDR;   /* of the TX timer (TXTIMER=3: Timer3) */
-
-static void oc1a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
+static void oc3a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 {
-	int mode = (avr->data[tccra_addr] >> 6) & 3;
+	int mode = (avr->data[TCCR3A_ADDR] >> 6) & 3;
 	int v    = value & 1;
 	static int dbg = -1;
 	static uint64_t dbg_from;
@@ -113,9 +110,8 @@ static void oc1a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 	if (dbg > 0 && avr->cycle >= dbg_from)
 	{
 		dbg--;
-		printf("oc1a raise %d at %llu mode %d OCR1A %u GPIOR0 %02x TIMSK1 %02x\n", v,
-		       (unsigned long long)avr->cycle, mode, avr->data[0x88] | (avr->data[0x89] << 8),
-		       avr->data[0x3E], avr->data[0x6F]);
+		printf("oc3a raise %d at %llu mode %d GPIOR0 %02x TIMSK3 %02x\n", v,
+		       (unsigned long long)avr->cycle, mode, avr->data[0x3E], avr->data[0x71]);
 	}
 	if (!((mode == 3 && v == 1) || (mode == 2 && v == 0)))
 	  return;
@@ -229,12 +225,8 @@ int main(int argc, char** argv)
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
 	if (getenv("TRACE"))
 	  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 7), dec_tick, NULL);
-	/* TXTIMER=3: soft TX on OC3A (PC6) instead of OC1A (PB5) */
-	int txtimer = getenv("TXTIMER") ? atoi(getenv("TXTIMER")) : 1;
-	if (txtimer == 3)
-	  tccra_addr = 0x90;
-	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ(txtimer == 3 ? '3' : '1'), TIMER_IRQ_OUT_COMP + 0),
-	                        oc1a_changed, NULL);
+	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('3'), TIMER_IRQ_OUT_COMP + 0),
+	                        oc3a_changed, NULL);
 	{
 		static const char ports[6] = { 'D', 'D', 'D', 'D', 'D', 'E' };
 		static const int  bits_[6] = { 0, 1, 5, 6, 7, 6 };
@@ -249,7 +241,7 @@ int main(int argc, char** argv)
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUTPUT), uart_out, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUT_XOFF), uart_xoff_cb, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUT_XON), uart_xon_cb, NULL);
-	avr_raise_irq(pd4, 1);   /* idle line until the firmware drives PB5 */
+	avr_raise_irq(pd4, 1);   /* idle line until the firmware drives PC6 */
 	if (getenv("TRACE"))
 	{
 		static const int vecs[] = { 16, 17, 25, 26 };
@@ -348,15 +340,10 @@ int main(int argc, char** argv)
 		{
 			qs_next = avr->cycle + 500;
 			uint8_t g0 = avr->data[0x3E], qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
-			int st = (g0 & 1) ? 0 : (g0 & 2) ? 1 : 2;                  /* RUN, DRAIN, IDLE */
-			int q  = (uint8_t)(qh - qt) / 4;
-			if (tccra_addr != TCCR1A_ADDR)
-			{
-				/* Timer3 transmitter: running (found a frame / nothing to
-				 * start last time) or stopped; queue of 2-byte words */
-				st = !(avr->data[0x71] & 2) ? 2 : (g0 & 2) ? 1 : 0;
-				q  = (uint8_t)(qh - qt) / 2;
-			}
+			/* running (found a frame / nothing to start last time) or
+			 * stopped; queue of 2-byte frame words */
+			int st = !(avr->data[0x71] & 2) ? 2 : (g0 & 2) ? 1 : 0;
+			int q  = (uint8_t)(qh - qt) / 2;
 			int qb = q == 0 ? 0 : q < 12 ? 1 : q < 40 ? 2 : 3;
 			int rb = (uint8_t)(avr->data[qs_ring & 0xFFFF] - avr->data[(qs_ring & 0xFFFF) + 1]) != 0;
 			qs_hist[st][qb][rb]++;
@@ -370,7 +357,7 @@ int main(int argc, char** argv)
 		}
 		if (qstat && fed == count && avr->cycle >= end && (!rxgen || avr->cycle > 250000 + rx_nsent * frame + 100000))
 		{
-			static const char* sn[] = { "RUN", "DRAIN", "IDLE" };
+			static const char* sn[] = { "RUN", "NOTHING", "STOPPED" };
 			static const char* qn[] = { "q=0", "q1-11", "q12-39", "q40+" };
 			uint64_t tot = 0;
 			for (int a = 0; a < 3; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) tot += qs_hist[a][b][c];
@@ -430,9 +417,9 @@ int main(int argc, char** argv)
 		fclose(f);
 	}
 	if (getenv("STATE"))
-	  printf("end state: cycle %llu OCR1A %u TCCR1A %02x TCCR1B %02x TIMSK1 %02x TIFR1 %02x GPIOR0 %02x GPIOR1(qtail) %u last TX edge %llu\n",
-	         (unsigned long long)avr->cycle, avr->data[0x88] | (avr->data[0x89] << 8), avr->data[0x80], avr->data[0x81],
-	         avr->data[0x6F], avr->data[0x36], avr->data[0x3E], avr->data[0x4A],
+	  printf("end state: cycle %llu TCCR3A %02x TCCR1B %02x TIMSK1 %02x TIMSK3 %02x TIFR1 %02x GPIOR0 %02x GPIOR1(txw tail) %u last TX edge %llu\n",
+	         (unsigned long long)avr->cycle, avr->data[0x90], avr->data[0x81],
+	         avr->data[0x6F], avr->data[0x71], avr->data[0x36], avr->data[0x3E], avr->data[0x4A],
 	         nedges ? (unsigned long long)edge_t[nedges - 1] : 0ULL);
 
 	if (getenv("DUMP"))
@@ -467,7 +454,7 @@ int main(int argc, char** argv)
 	while (cs < 4 && F_CPU / presc[cs] / baud * 12 > 65000) cs++;
 	double tol = 2.0 * presc[cs] + 8;   /* + simavr step granularity (instructions, interrupt entry) */
 
-	/* 2 + 3. decode PB5 independently and measure edge timing */
+	/* 2 + 3. decode the TX pin independently and measure edge timing */
 	double bitc = F_CPU / baud;
 	int    ndec = 0, dbad = 0;
 	double worst = 0;

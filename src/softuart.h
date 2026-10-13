@@ -1,6 +1,6 @@
 /*
- * Port 1: soft UART on Timer1. RX = PD4 (ICP1, Pro Micro pin 4),
- * TX = PB5 (OC1A, Pro Micro pin 9).
+ * Port 1: soft UART. RX = PD4 (ICP1, Pro Micro pin 4) on Timer1,
+ * TX = PC6 (OC3A, Pro Micro pin 5) on Timer3.
  */
 #ifndef SOFTUART_H
 #define SOFTUART_H

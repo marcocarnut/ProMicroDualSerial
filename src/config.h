@@ -28,17 +28,6 @@
 #define SOFTUART_MIN_BAUD          50
 #define SOFTUART_MAX_BAUD          230400
 
-/* Soft UART transmitter:
- *  0  edge queue on Timer1 / OC1A: TX on PB5 (pin 9). The main loop turns
- *     each byte into a list of line transitions.
- *  3  one interrupt per bit on Timer3 / OC3A in CTC mode: TX on PC6
- *     (pin 5), and port 1's DSR moves to PB5 (pin 9). Much cheaper per
- *     frame; needs r2-r7 reserved for its ISR (the Makefiles pass the
- *     -ffixed-rN flags for it). */
-#ifndef SU_TX_MODE
-#define SU_TX_MODE 0
-#endif
-
 /* ---- Flow control and modem control lines ------------------------------
  * Pins are given as <port letter>,<bit>. All of these signals are active
  * low on the pins, like on any TTL-level UART adapter (e.g. FTDI). Inputs
@@ -49,7 +38,7 @@
  *   RTS out  F,4  (A3)            F,6  (A1)
  *   CTS in   F,5  (A2)            F,7  (A0)
  *   DTR out  B,1  (15)            D,7  (6)
- *   DSR in   B,3  (14)            C,6  (5)   B,5 (9) with SU_TX_MODE 3
+ *   DSR in   B,3  (14)            B,5  (9)
  *   DCD in   B,2  (16)            E,6  (7)
  *   RI  in   B,6  (10)            B,4  (8)
  */
@@ -62,11 +51,7 @@
 #define P1_RTS_PIN   F,6
 #define P1_CTS_PIN   F,7
 #define P1_DTR_PIN   D,7
-#if SU_TX_MODE == 3
 #define P1_DSR_PIN   B,5
-#else
-#define P1_DSR_PIN   C,6
-#endif
 #define P1_DCD_PIN   E,6
 #define P1_RI_PIN    B,4
 

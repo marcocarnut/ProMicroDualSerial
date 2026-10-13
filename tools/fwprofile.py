@@ -131,7 +131,7 @@ def main():
           ", ".join("%d:%d" % (b - base, late[b]) for b in sorted(late)))
     if stats:
         print("soft TX encoder, per call: %d calls; stopped by RX backlog gate %d, batch limit %d, "
-              "empty tx ring %d, full edge queue %d; restarts from idle %d (the counts saturate at 65535)"
+              "empty tx ring %d, full frame word queue %d; restarts from idle %d (the counts saturate at 65535)"
               % tuple(stats.get(i, 0) for i in range(6)))
     print()
 

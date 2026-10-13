@@ -5,13 +5,13 @@ Hardware test for ProMicroDualUART (stdlib only, Linux).
 Wire the two UARTs to each other like a null modem cable:
 
     TX0 (PD3)            ->  pin 4 (PD4, soft RX)
-    pin 9 (PB5, soft TX) ->  RX1 (PD2)
+    pin 5 (PC6, soft TX) ->  RX1 (PD2)
     A3 (port 0 RTS)      ->  A0 (port 1 CTS)
     A1 (port 1 RTS)      ->  A2 (port 0 CTS)
 
 and optionally, for --modem (and --dcd, with the DCD wires too):
 
-    15 (port 0 DTR)      ->  5 (port 1 DSR)  [and 7 (port 1 DCD)]
+    15 (port 0 DTR)      ->  9 (port 1 DSR)  [and 7 (port 1 DCD)]
     6  (port 1 DTR)      ->  14 (port 0 DSR) [and 16 (port 0 DCD)]
 
 Then everything written to one port should come out of the other, through

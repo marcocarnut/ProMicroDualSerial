@@ -13,7 +13,7 @@ F_CPU        = 16000000
 F_USB        = $(F_CPU)
 OPTIMIZATION = s
 TARGET       = ProMicroDualUART
-SRC          = src/main.c src/Descriptors.c src/clock.c src/hwuart.c src/softuart.c src/softuart_codec.c src/softuart_dec.S src/softuart_enc.S src/profiler.c $(LUFA_SRC_USB) $(LUFA_SRC_USBCLASS)
+SRC          = src/main.c src/Descriptors.c src/clock.c src/hwuart.c src/softuart.c src/softuart_codec.c src/softuart_dec.S src/profiler.c $(LUFA_SRC_USB) $(LUFA_SRC_USBCLASS)
 LUFA_PATH    = lufa/LUFA
 CC_FLAGS     = -DUSE_LUFA_CONFIG_HEADER -IConfig/ -Isrc/ -Wextra -Wno-unused-parameter
 # The soft UART's 256-byte aligned rings (.noinit) go at the start of RAM,
@@ -24,12 +24,9 @@ LD_FLAGS     = -Wl,--section-start=.noinit=0x800100 -Wl,-Tdata=0x800300
 # extra compiler flags, e.g. make clean && make EXTRA=-DTX_ENCODE_BATCH=2
 CC_FLAGS    += $(EXTRA)
 
-# soft UART transmitter (see src/config.h): make clean && make SU_TX_MODE=3
-SU_TX_MODE  ?= 0
-CC_FLAGS    += -DSU_TX_MODE=$(SU_TX_MODE)
-ifneq ($(SU_TX_MODE),0)
+# r2-r7 belong to the soft UART's ISRs (see src/softuart.c): nothing else
+# may use them
 CC_FLAGS    += -DSU_REGS_RESERVED $(foreach r,2 3 4 5 6 7,-ffixed-r$(r))
-endif
 
 # Caterina (Arduino / SparkFun Pro Micro) bootloader
 FLASH_PORT        ?= /dev/ttyACM0
