@@ -20,7 +20,7 @@ static int failures, checks;
 static uint8_t out_data[MAXOUT], out_flags[MAXOUT];
 static int     nout;
 
-static void rx_cb(uint8_t data, uint8_t flags)
+void su_rx_frame(uint8_t data, uint8_t flags)
 {
 	if (nout < MAXOUT) { out_data[nout] = data; out_flags[nout] = flags; }
 	nout++;
@@ -77,22 +77,29 @@ static uint32_t play_frames(const su_cfg_t* c, const uint8_t* data, int n, uint3
 	su_enc_reset(&enc);
 	for (int i = 0; i < n; i++)
 	{
-		su_edge_t e[SU_MAX_EDGES];
+		static uint8_t q[256];
 		if (idle)
 		  su_enc_reset(&enc);
-		uint8_t   k = su_encode(c, &enc, data[i], e);
+		uint8_t h0 = rnd();          /* any ring position, to exercise the wrap */
+		h0 &= ~3;
+		uint8_t h  = su_encode(c, &enc, data[i], q, h0);
+		uint8_t k  = (uint8_t)(h - h0) / 4;
 
 		CHECK(k >= 1 && k <= SU_MAX_EDGES, "edge count %d", k);
-		CHECK(e[0].start && e[0].level == 0, "first edge must be a start bit");
+		CHECK(q[(uint8_t)(h0 + 2)] == (SU_CTL_LOW | SU_CTL_START), "first edge must be a start bit");
 
 		for (uint8_t j = 0; j < k; j++)
 		{
+			uint8_t  o     = h0 + 4 * j;
+			uint16_t delta = q[o] | (q[(uint8_t)(o + 1)] << 8);
+			uint8_t  ctl   = q[(uint8_t)(o + 2)];
+			CHECK(j == 0 || !(ctl & SU_CTL_START), "start flag on a later edge");
 			if (j == 0 && idle)
 			  t += 1000 + (gaps ? rnd() % 50000 : 0);
 			else
-			  t += e[j].delta;
+			  t += delta;
 			int32_t jit = jitter ? (int32_t)(rnd() % (2 * jitter + 1)) - jitter : 0;
-			add_edge(t + jit, e[j].level);
+			add_edge(t + jit, (ctl & ~SU_CTL_START) == SU_CTL_HIGH);
 		}
 		idle = gaps && (rnd() % 3 == 0);
 		if (idle)
@@ -101,18 +108,45 @@ static uint32_t play_frames(const su_cfg_t* c, const uint8_t* data, int n, uint3
 	return t + enc.tail;
 }
 
+/* Feeds the edge list to the decoder the way the firmware does: in batches
+ * of random size through a 256-byte timestamp ring, with polls in between
+ * often enough for the decoder's 16-bit time. */
 static void decode_all(const su_cfg_t* c, uint32_t end)
 {
+	static uint8_t ring[256];
 	su_dec_t d;
 	su_dec_reset(&d, 1);
 	nout = 0;
-	for (int i = 0; i < nedges; i++)
+
+	uint8_t  head = rnd() & ~1;
+	uint32_t polled = nedges ? edges[0].t - 1 : 0;
+	int      i = 0;
+	while (i < nedges)
 	{
-		/* interleave time polls like the main loop does */
-		su_dec_time(&d, c, edges[i].t - 1, rx_cb);
-		su_dec_edge(&d, c, edges[i].t, edges[i].level, rx_cb);
+		/* polls up to just before the next edge */
+		while ((int32_t)(edges[i].t - 1 - polled) > 0)
+		{
+			polled += ((int32_t)(edges[i].t - 1 - polled) > 4096) ? 4096 : edges[i].t - 1 - polled;
+			su_dec_run(&d, c, ring, head, head, 0, (uint16_t)polled);
+		}
+
+		/* a batch of 1..60 edges, all within 4096 ticks of each other's poll */
+		int     n = 1 + rnd() % 60;
+		uint8_t tail = head;
+		int     j = i;
+		while (j < nedges && j < i + n && (j == i || edges[j].t - edges[j - 1].t < 4096))
+		{
+			ring[head] = (uint8_t)edges[j].t;
+			ring[(uint8_t)(head + 1)] = (uint8_t)(edges[j].t >> 8);
+			head += 2;
+			j++;
+		}
+		su_dec_run(&d, c, ring, tail, head, edges[i].level, (uint16_t)edges[j - 1].t);
+		polled = edges[j - 1].t;
+		i = j;
 	}
-	su_dec_time(&d, c, end + 100000, rx_cb);
+	for (int k = 1; k < 20; k++)
+	  su_dec_run(&d, c, ring, head, head, 0, (uint16_t)(end + 4096 * k));
 }
 
 /* ---- tests ---- */

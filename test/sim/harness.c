@@ -8,6 +8,13 @@
  *
  * usage: harness <fw.elf> <soft baud> <bits> <parity 0-4> <stop 0-2> <pattern> <count>
  *   pattern: random | 55 | 00 | ff | ascii
+ * environment:
+ *   LOAD=x        offer TX data at x times the line rate (default 0.99; the
+ *                 firmware's "ready" pin holds it off like USB would)
+ *   RXGEN=1       drive the soft RX pin from an independent full-rate stream
+ *                 instead of looping TX back
+ *   PROFILE=file  write a cycles-per-address profile (see profile.py)
+ *   TRACE=1, DUMP=n, OCDEBUG=n, STATE=1, GAPS=n: debugging aids
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +40,7 @@ static int      nsent;
 static uint8_t  back[100000];
 static int      nback;
 static int      uart_xoff;
+static int      rxgen;
 
 /* recent event log, dumped when the first error flag rises (TRACE=1) */
 #define NLOG 40000
@@ -64,22 +72,19 @@ static uint8_t  edge_v[2000000];
 static int      nedges;
 
 /*
- * simavr 1.6 does not model OC1A faithfully in normal mode: on every OCR1x
- * write and every overflow it drives the pin to the inverse of the COM1A
- * action ("PWM style" set-at-TOP / clear-at-TOP), which real silicon never
- * does. Those spurious drives are always the opposite of what the current
- * COM1A mode would do on a match, so they are filtered out here and OC1A
- * is rebuilt from the genuine compare matches only.
+ * OC1A is rebuilt from the timer's compare output IRQ. simavr 1.6 also
+ * drove that IRQ to the inverse of the COM1A action on every OCR1x write
+ * and overflow (fixed in 1.8); such drives are the opposite of what the
+ * current COM1A mode does on a match, so they are filtered out. Harmless
+ * with newer simavr.
  */
 #define TCCR1A_ADDR 0x80
 static int txline = 1;
 
 /*
- * The loopback is delayed a little (as the input synchroniser and noise
- * canceller would on silicon). Without it the capture interrupt always
- * becomes pending at the same instant as the compare interrupt and runs
- * first; its "TIFR1 = 1 << ICF1" then wipes OCF1A in simavr 1.6, which
- * stores TIFR writes as raw bytes instead of only clearing the 1 bits.
+ * The loopback is delayed a little, as the wiring plus input synchroniser
+ * and noise canceller would be on silicon (it also sidesteps simavr 1.6
+ * losing one of two interrupts that become pending in the same cycle).
  */
 #define LOOP_DELAY 20
 
@@ -96,8 +101,10 @@ static void oc1a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 	int mode = (avr->data[TCCR1A_ADDR] >> 6) & 3;
 	int v    = value & 1;
 	static int dbg = -1;
-	if (dbg < 0) dbg = getenv("OCDEBUG") ? atoi(getenv("OCDEBUG")) : 0;
-	if (dbg > 0)
+	static uint64_t dbg_from;
+	if (dbg < 0) { dbg = getenv("OCDEBUG") ? atoi(getenv("OCDEBUG")) : 0;
+	               dbg_from = getenv("OCDEBUG_FROM") ? strtoull(getenv("OCDEBUG_FROM"), 0, 0) : 0; }
+	if (dbg > 0 && avr->cycle >= dbg_from)
 	{
 		dbg--;
 		printf("oc1a raise %d at %llu mode %d OCR1A %u GPIOR0 %02x TIMSK1 %02x\n", v,
@@ -113,7 +120,8 @@ static void oc1a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 	edge_t[nedges] = avr->cycle;
 	edge_v[nedges] = v;
 	nedges++;
-	avr_cycle_timer_register(avr, LOOP_DELAY, loop_cb, (void*)(intptr_t)v);
+	if (!rxgen)
+	  avr_cycle_timer_register(avr, LOOP_DELAY, loop_cb, (void*)(intptr_t)v);
 }
 
 static void uart_out(struct avr_irq_t* irq, uint32_t value, void* param)
@@ -123,6 +131,38 @@ static void uart_out(struct avr_irq_t* irq, uint32_t value, void* param)
 
 static void uart_xoff_cb(struct avr_irq_t* irq, uint32_t value, void* param) { uart_xoff = 1; }
 static void uart_xon_cb(struct avr_irq_t* irq, uint32_t value, void* param) { uart_xoff = 0; }
+
+static uint64_t loop_last, loop_max, loop_max_at, loop_hist[8];
+static void loop_tick(struct avr_irq_t* irq, uint32_t value, void* param)
+{
+	if (loop_last && avr->cycle > 300000)
+	{
+		uint64_t d = avr->cycle - loop_last;
+		if (d > loop_max) { loop_max = d; loop_max_at = avr->cycle; }
+		int b = d < 500 ? 0 : d < 1000 ? 1 : d < 2000 ? 2 : d < 4000 ? 3 : d < 8000 ? 4 : 5;
+		loop_hist[b]++;
+	}
+	loop_last = avr->cycle;
+}
+
+/* RXGEN mode: an independent transmitter drives the soft UART's RX pin with
+ * back-to-back frames at exactly the line rate, while the soft TX output is
+ * only checked (not looped back). */
+static uint8_t   rx_sent[100000];
+static int       rx_nsent;
+static uint64_t* gen_t;
+static uint8_t*  gen_v;
+static int       gen_n, gen_i;
+
+static avr_cycle_count_t gen_cb(struct avr_t* a, avr_cycle_count_t when, void* param)
+{
+	avr_raise_irq(pd4, gen_v[gen_i]);
+	gen_i++;
+	return gen_i < gen_n ? gen_t[gen_i] : 0;
+}
+
+static int fw_ready = 1;
+static void ready_cb(struct avr_irq_t* irq, uint32_t value, void* param) { fw_ready = value & 1; }
 
 static int err_pin;
 static const char* const err_names[8] = { "any", "soft-framing", 0, 0, "soft-parity", "soft-overrun", "soft-break", "hw-usart" };
@@ -155,6 +195,8 @@ int main(int argc, char** argv)
 	avr->log = 0;
 
 	pd4 = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('D'), 4);
+	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 6), loop_tick, NULL);
+	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('1'), TIMER_IRQ_OUT_COMP + 0),
 	                        oc1a_changed, NULL);
 	for (int b = 0; b < 8; b++)
@@ -187,30 +229,83 @@ int main(int argc, char** argv)
 		sent[i] = b & ((1 << bits) - 1);
 	}
 
+	rxgen = getenv("RXGEN") != NULL;
+	if (rxgen)
+	{
+		/* back-to-back frames from cycle 250000, exact bit times */
+		double bt = F_CPU / baud, t = 250000;
+		int    nbits = 1 + bits + (parity != 0);
+		rx_nsent = count;
+		gen_t = malloc(sizeof(uint64_t) * count * 12);
+		gen_v = malloc(count * 12);
+		int lvl = 1;
+		for (int i = 0; i < count; i++)
+		{
+			uint8_t b = rand() & ((1 << bits) - 1);
+			rx_sent[i] = b;
+			int fb[12], k = 0;
+			fb[k++] = 0;
+			for (int j = 0; j < bits; j++) fb[k++] = (b >> j) & 1;
+			if (parity)
+			{
+				int p = 0;
+				for (int j = 0; j < bits; j++) p ^= (b >> j) & 1;
+				fb[k++] = parity == 1 ? !p : parity == 2 ? p : parity == 3 ? 1 : 0;
+			}
+			fb[k++] = 1;
+			for (int j = 0; j < k; j++)
+			  if (fb[j] != lvl) { lvl = fb[j]; gen_t[gen_n] = (uint64_t)(t + j * bt + 0.5); gen_v[gen_n++] = lvl; }
+			t += (nbits + 1 + 0.5 * stop) * bt;
+		}
+		/* cycle timers take a delay; convert absolute times to the callback's return (absolute) */
+		avr_cycle_timer_register(avr, gen_t[0], gen_cb, NULL);
+	}
+
 	/* Let the firmware boot, then feed bytes at slightly below the soft
 	 * UART's frame rate so its rings never overflow. */
 	int    nb       = 1 + bits + (parity != 0);
 	double frame    = (nb + 1 + 0.5 * stop) / baud * F_CPU;
-	double interval = frame * 1.01;
+	double load     = getenv("LOAD") ? atof(getenv("LOAD")) : 0.99;   /* fraction of the line rate fed */
+	double interval = load > 0 ? frame / load : 0;
+	if (load <= 0) count = 0;     /* RX only */
 	double next     = 200000;
 	int    fed      = 0;
+	uint64_t first_fed = 0;   /* for the throughput figure */
 	uint64_t end    = 0;
 
+	static uint32_t prof[16384];          /* cycles per word address */
+	int      profiling = getenv("PROFILE") != NULL;
+	uint64_t prof_from = getenv("PROFILE_FROM") ? strtoull(getenv("PROFILE_FROM"), 0, 0) : 300000;
 	for (;;)
 	{
+		uint32_t pc = avr->pc;
+		uint64_t c0 = avr->cycle;
 		int state = avr_run(avr);
+		static uint64_t prof_to; if (!prof_to) prof_to = getenv("PROFILE_TO") ? strtoull(getenv("PROFILE_TO"), 0, 0) : ~0ULL;
+		if (profiling && c0 >= prof_from && c0 < prof_to && pc / 2 < 16384)
+		  prof[pc / 2] += (uint32_t)(avr->cycle - c0);
 		if (state == cpu_Done || state == cpu_Crashed) { fprintf(stderr, "cpu stopped (%d)\n", state); return 2; }
 
-		if (fed < count && avr->cycle >= next && !uart_xoff)
+		if (fed < count && avr->cycle >= next && !uart_xoff && fw_ready)
 		{
 			avr_raise_irq(uin, sent[fed++]);
+			if (fed == 1) first_fed = avr->cycle;
 			next += interval;
-			if (fed == count) end = avr->cycle + (uint64_t)(frame * 300) + 2000000;
+			if (next < avr->cycle) next = avr->cycle;   /* held off: don't burst to catch up */
+			if (fed == count) end = avr->cycle + (uint64_t)(frame * 600) + 2000000;
 		}
-		if (fed == count && avr->cycle >= end)
+		if (count == 0 && !end) end = 250000 + (uint64_t)(rx_nsent * frame) + 2000000;
+		if (fed == count && avr->cycle >= end && (!rxgen || avr->cycle > 250000 + rx_nsent * frame + 100000))
 		  break;
 	}
 	nsent = count;
+	if (profiling)
+	{
+		FILE* f = fopen(getenv("PROFILE"), "w");
+		for (int i = 0; i < 16384; i++)
+		  if (prof[i]) fprintf(f, "%x %u\n", i * 2, prof[i]);
+		fclose(f);
+	}
 	if (getenv("STATE"))
 	  printf("end state: cycle %llu OCR1A %u TCCR1A %02x TCCR1B %02x TIMSK1 %02x TIFR1 %02x GPIOR0 %02x GPIOR1(qtail) %u last TX edge %llu\n",
 	         (unsigned long long)avr->cycle, avr->data[0x88] | (avr->data[0x89] << 8), avr->data[0x80], avr->data[0x81],
@@ -226,11 +321,24 @@ int main(int argc, char** argv)
 		printf("sent: "); for (int i = 0; i < 8; i++) printf("%02x ", sent[i]); printf("\n");
 	}
 
-	/* 1. bytes back through USART1 */
+	if (nedges && nsent)
+	  printf("tx throughput: %.1f%% of line rate\n",
+	         100.0 * nsent * frame / (double)(edge_t[nedges - 1] - first_fed));
+
+	/* 1. bytes back through USART1 (in RXGEN mode: the generated RX stream) */
+	const uint8_t* want  = rxgen ? rx_sent : sent;
+	int            nwant = rxgen ? rx_nsent : nsent;
 	int bad = 0;
-	for (int i = 0; i < nsent && i < nback; i++)
-	  if (back[i] != sent[i]) { if (bad < 5) printf("  loopback byte %d: got %02x want %02x\n", i, back[i], sent[i]); bad++; }
-	printf("loopback: sent %d, got back %d, %d mismatches, error pin %d\n", nsent, nback, bad, err_pin);
+	for (int i = 0; i < nwant && i < nback; i++)
+	  if (back[i] != want[i]) { if (bad < 5) printf("  rx byte %d: got %02x want %02x\n", i, back[i], want[i]); bad++; }
+	printf("%s: sent %d, got %d, %d mismatches, error pin %d\n", rxgen ? "rx stream" : "loopback", nwant, nback, bad, err_pin);
+
+	/* edges may be off by the encoder's rounding (1 timer tick) and the
+	 * capture of frame starts (1 tick) */
+	static const int presc[] = { 1, 8, 64, 256, 1024 };
+	int cs = 0;
+	while (cs < 4 && F_CPU / presc[cs] / baud * 12 > 65000) cs++;
+	double tol = 2.0 * presc[cs] + 4;   /* + simavr instruction-granular timing */
 
 	/* 2 + 3. decode PB5 independently and measure edge timing */
 	double bitc = F_CPU / baud;
@@ -277,25 +385,37 @@ int main(int argc, char** argv)
 		           while (e < nedges && edge_v[e] != 0) e++; }
 		ndec++;
 		/* next start bit must not come before the end of the stop bits */
-		if (e < nedges && (double)edge_t[e] < s + (nb + 1 + 0.5 * stop) * bitc - 6)
-		{ static int nearly; if (nearly++ < 3) { printf("  frame %d: next start bit %.1f cycles early; edges from its start:\n", ndec,
+		if (e < nedges && (double)edge_t[e] < s + (nb + 1 + 0.5 * stop) * bitc - tol)
+		{ static int nearly; if (nearly++ < 3) { printf("  frame %d (start at cycle %.0f): next start bit %.1f cycles early; edges from its start:\n", ndec, s,
 		                       s + (nb + 1 + 0.5 * stop) * bitc - edge_t[e]);
 		             int e0 = e; while (e0 > 0 && (double)edge_t[e0] > s) e0--;
 		             for (int j = e0; j <= e && j < nedges; j++)
 		               printf("     %+9.2f bits -> %d\n", (edge_t[j] - s) / bitc, edge_v[j]); }
 		  dbad++; }
 	}
+	/* inter-frame gaps (idle time between the end of one frame's stop bits
+	 * and the next start bit) */
+	{
+		double fl = (nb + 1 + 0.5 * stop) * bitc, lost = 0, prev = -1;
+		int ngaps = 0, nf = 0;
+		for (int j = 0; j < nedges; j++)
+		{
+			if (edge_v[j] != 0) continue;
+			/* a falling edge at least one frame after the previous start is a start bit */
+			if (prev < 0 || edge_t[j] >= prev + fl - 6)
+			{
+				if (prev >= 0 && edge_t[j] > prev + fl + 6 && edge_t[j] < prev + 3 * fl) { lost += edge_t[j] - prev - fl; ngaps++; }
+				prev = edge_t[j];
+				nf++;
+				if (getenv("GAPS") && nf == atoi(getenv("GAPS"))) { printf("frame %d starts at cycle %llu\n", nf, (unsigned long long)edge_t[j]); break; }
+			}
+		}
+		printf("gaps: %d short idle gaps between back-to-back frames, %.0f cycles total (%.2f frames)\n", ngaps, lost, lost / fl);
+	}
 	printf("waveform: %d frames, %d bad, worst edge deviation %.1f cycles (%.1f%% of a bit)\n",
 	       ndec, dbad, worst, 100 * worst / bitc);
 
-	/* edges may be off by the encoder's rounding (1 timer tick) and the
-	 * capture of frame starts (1 tick) */
-	static const int presc[] = { 1, 8, 64, 256, 1024 };
-	int cs = 0;
-	while (cs < 4 && F_CPU / presc[cs] / baud * 12 > 65000) cs++;
-	double tol = 2.0 * presc[cs] + 4;   /* + simavr instruction-granular timing */
-
-	int fail = bad || nback != nsent || err_pin || dbad || ndec != nsent || worst > tol;
+	int fail = bad || nback != nwant || err_pin || dbad || ndec != nsent || worst > tol;
 	printf("%s\n", fail ? "FAIL" : "PASS");
 	return fail;
 }

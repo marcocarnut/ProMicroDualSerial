@@ -3,6 +3,15 @@
  */
 #include "softuart_codec.h"
 
+/* The encoder and decoder are the soft UART's main loop hot spots; -Os
+ * makes the decoder spill its state to the stack on every edge. */
+#if defined(__AVR__)
+#pragma GCC optimize ("O2")
+#endif
+
+static const uint16_t su_pow2[SU_MAX_BITS + 1] =
+	{ 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048 };
+
 static uint8_t parity_bit(const su_cfg_t* c, uint8_t data)
 {
 	uint8_t p = data & (uint8_t)((1 << c->data_bits) - 1);
@@ -47,6 +56,8 @@ void su_cfg_init(su_cfg_t* c, uint32_t timer_hz, uint32_t baud,
 		c->sample[i]    = (uint16_t)((HALF_BITS_Q8(2u * i + 1) + 128) >> 8);
 	}
 
+	c->sample[c->nbits] = 0xFFFF;
+
 	/* everything up to the stop bits, then 2, 3 or 4 half bits of stop */
 	uint32_t frame_q8 = HALF_BITS_Q8(2u * (c->nbits - 1) + 2 + stop);
 	c->frame_len  = (uint16_t)(frame_q8 >> 8);
@@ -60,39 +71,51 @@ void su_enc_reset(su_enc_t* e)
 	e->frac = 128;   /* round frame starts to the nearest tick */
 }
 
-uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, su_edge_t* out)
+uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, uint8_t* q, uint8_t h)
 {
+	uint8_t n = c->nbits;
+
 	/* frame bits, LSB first: start (0), data, parity, stop (1) */
-	uint16_t bits = (uint16_t)(data & ((1 << c->data_bits) - 1)) << 1;
-	uint8_t  n    = 1 + c->data_bits;
+	uint16_t bits = (uint16_t)(data & (uint8_t)((1 << c->data_bits) - 1)) << 1;
 	if (c->parity != SU_PARITY_NONE)
-	  bits |= (uint16_t)parity_bit(c, data) << n++;
-	bits |= (uint16_t)1 << n;
+	  bits |= (uint16_t)parity_bit(c, data) << (n - 2);
+	bits |= (uint16_t)1 << (n - 1);
 
-	uint8_t  count     = 0;
-	uint8_t  level     = 1;            /* idle */
-	uint16_t last_edge = 0;
+	/* bit i set where the level changes entering bit i (idle before bit 0 is 1) */
+	uint16_t trans = (bits ^ ((bits << 1) | 1)) & (su_pow2[n] - 1);
 
-	for (uint8_t i = 0; i < c->nbits; i++)
+	/* the start bit */
+	q[h]     = (uint8_t)e->tail;
+	q[h + 1] = (uint8_t)(e->tail >> 8);
+	q[h + 2] = SU_CTL_LOW | SU_CTL_START;
+	h += 4;
+
+	const uint16_t* bs   = &c->bit_start[1];
+	uint16_t        last = 0;
+	trans >>= 1;
+	bits  >>= 1;
+	while (trans)
 	{
-		uint8_t b = (bits >> i) & 1;
-		if (b == level)
-		  continue;
-
-		out[count].delta = count ? (uint16_t)(c->bit_start[i] - last_edge) : e->tail;
-		out[count].level = b;
-		out[count].start = (count == 0);
-		count++;
-
-		level     = b;
-		last_edge = c->bit_start[i];
+		if (trans & 1)
+		{
+			uint16_t delta = *bs - last;
+			last     = *bs;
+			q[h]     = (uint8_t)delta;
+			q[h + 1] = (uint8_t)(delta >> 8);
+			q[h + 2] = (bits & 1) ? SU_CTL_HIGH : SU_CTL_LOW;
+			h += 4;
+		}
+		trans >>= 1;
+		bits  >>= 1;
+		bs++;
 	}
 
 	uint16_t frac = (uint16_t)e->frac + c->frame_frac;
 	e->frac = (uint8_t)frac;
-	e->tail = c->frame_len + (frac >> 8) - last_edge;
-	return count;
+	e->tail = c->frame_len + (frac >> 8) - last;
+	return h;
 }
+
 
 void su_dec_reset(su_dec_t* d, uint8_t level)
 {
@@ -100,13 +123,10 @@ void su_dec_reset(su_dec_t* d, uint8_t level)
 	d->level    = level;
 }
 
-static void finish_frame(su_dec_t* d, const su_cfg_t* c, su_rx_cb_t cb)
+static void finish_frame(const su_cfg_t* c, uint16_t bits)
 {
-	uint16_t bits  = d->bits;
 	uint8_t  data  = (uint8_t)(bits >> 1) & (uint8_t)((1 << c->data_bits) - 1);
 	uint8_t  flags = 0;
-
-	d->in_frame = 0;
 
 	if (!(bits >> (c->nbits - 1)))
 	  flags |= SU_RX_FRAMING;
@@ -114,7 +134,7 @@ static void finish_frame(su_dec_t* d, const su_cfg_t* c, su_rx_cb_t cb)
 	if (bits == 0)
 	{
 		/* line low for the whole frame, stop bit included */
-		cb(0, SU_RX_BREAK);
+		su_rx_frame(0, SU_RX_BREAK);
 		return;
 	}
 
@@ -122,75 +142,76 @@ static void finish_frame(su_dec_t* d, const su_cfg_t* c, su_rx_cb_t cb)
 	    ((bits >> (1 + c->data_bits)) & 1) != parity_bit(c, data))
 	  flags |= SU_RX_PARITY;
 
-	cb(data, flags);
+	su_rx_frame(data, flags);
 }
 
-/* Take every pending sample that lies strictly before 'limit' using the
- * current line level. Works on 16-bit offsets from the start bit, which is
- * what keeps this cheap enough to run per edge on an 8-bit CPU. */
-static void sample_until(su_dec_t* d, const su_cfg_t* c, uint32_t limit, su_rx_cb_t cb)
+/*
+ * Decoder inner loop. It runs once per received edge, so it is written to
+ * keep its whole state in registers on an 8-bit CPU: per edge it loads the
+ * timestamp, and only if the next sample point has been passed walks the
+ * sample table (ending at its 0xFFFF sentinel) to fill in the bits.
+ */
+void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tail,
+                uint8_t head, uint8_t lvl_next, uint16_t now)
 {
-	if (!d->in_frame)
-	  return;
+	uint8_t         in_frame = d->in_frame;
+	uint8_t         lvl      = d->level;
+	const uint16_t* next     = d->next;
+	uint16_t        mask     = d->mask;
+	uint16_t        bits     = d->bits;
+	uint16_t        start    = d->start;
 
-	uint32_t rel32 = limit - d->start;
-	if ((int32_t)rel32 <= 0)
-	  return;
-	uint16_t rel = (rel32 > 0xFFFF) ? 0xFFFF : (uint16_t)rel32;   /* frames are shorter than that */
-
-	uint8_t idx = d->idx;
-	if (idx == 0)
+	/* every edge, then 'now' as a final pseudo-edge that changes nothing */
+	for (;;)
 	{
-		if (c->sample[0] >= rel)
-		  return;
-		if (d->level)
+		uint8_t  edge = (tail != head);
+		uint16_t t    = edge ? (ring[tail] | ((uint16_t)ring[(uint8_t)(tail + 1)] << 8)) : now;
+
+		if (in_frame)
 		{
-			/* start bit gone by mid-bit: a glitch, not a frame */
-			d->in_frame = 0;
-			return;
+			uint16_t rel = t - start;
+			if (*next < rel)
+			{
+				if (next == c->sample && lvl)
+				  in_frame = 0;   /* start bit gone by mid-bit: a glitch */
+				else
+				{
+					do
+					{
+						if (lvl)
+						  bits |= mask;
+						mask <<= 1;
+						next++;
+					} while (*next < rel);
+					if (*next == 0xFFFF)
+					{
+						finish_frame(c, bits);
+						in_frame = 0;
+					}
+				}
+			}
 		}
-		idx = 1;
-	}
 
-	uint8_t n = c->nbits;
-	if (d->level)
-	{
-		uint16_t mask = (uint16_t)1 << idx;
-		uint16_t bits = d->bits;
-		while (idx < n && c->sample[idx] < rel)
+		if (!edge)
+		  break;
+		tail += 2;
+
+		lvl = lvl_next;
+		lvl_next ^= 1;
+		if (!in_frame && !lvl)
 		{
-			bits |= mask;
-			mask <<= 1;
-			idx++;
+			in_frame = 1;
+			start    = t;
+			next     = c->sample;
+			mask     = 1;
+			bits     = 0;
 		}
-		d->bits = bits;
-	}
-	else
-	{
-		while (idx < n && c->sample[idx] < rel)
-		  idx++;
 	}
 
-	d->idx = idx;
-	if (idx == n)
-	  finish_frame(d, c, cb);
-}
-
-void su_dec_edge(su_dec_t* d, const su_cfg_t* c, uint32_t t, uint8_t level, su_rx_cb_t cb)
-{
-	sample_until(d, c, t, cb);
-
-	d->level = level;
-	if (!d->in_frame && !level)
-	{
-		d->in_frame = 1;
-		d->start    = t;
-		d->idx      = 0;
-		d->bits     = 0;
-	}
-}
-
-void su_dec_time(su_dec_t* d, const su_cfg_t* c, uint32_t now, su_rx_cb_t cb)
-{
-	sample_until(d, c, now, cb);
+	d->in_frame = in_frame;
+	d->level    = lvl;
+	d->next     = next;
+	d->mask     = mask;
+	d->bits     = bits;
+	d->start    = start;
 }

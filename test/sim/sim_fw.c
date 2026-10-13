@@ -51,8 +51,10 @@ int main(void)
 	softuart_port.configure(&sw);
 	sei();
 
+	DDRB |= _BV(PB6) | _BV(PB4);
 	for (;;)
 	{
+		PINB = _BV(PB6);    /* toggles: one edge per main loop iteration */
 		clock_ticks();
 		hwuart_port.task();
 		softuart_port.task();
@@ -61,6 +63,13 @@ int main(void)
 		softuart_port.tx_start();
 		move(softuart_port.rx, hwuart_port.tx);
 		hwuart_port.tx_start();
+
+		/* PB4: "ready for more" - stands in for USB NAKing the host when the
+		 * rings are full (the harness only feeds USART1 while it is high) */
+		if (ring_free(hwuart_port.rx) > 64 && ring_free(softuart_port.tx) > 64)
+		  PORTB |= _BV(PB4);
+		else
+		  PORTB &= ~_BV(PB4);
 
 		uint8_t serr, herr;
 		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)

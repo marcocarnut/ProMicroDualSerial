@@ -18,8 +18,8 @@
  *     the next edge. Because the polarity is flipped after every capture,
  *     captured edges always alternate falling/rising, so the level after
  *     each one follows from the current ICES1 setting and is not stored.
- *     The main loop extends timestamps to 32 bits and turns the edge stream
- *     into bytes by sampling each bit in its middle.
+ *     The main loop turns the edge stream into bytes by sampling each bit
+ *     in its middle.
  *
  * Both ISRs are hand written: they are what limits the usable baud rate.
  * At 16 MHz and 115200 baud a bit is 139 cycles; the capture ISR flips the
@@ -29,9 +29,9 @@
  * from a compare match to OCR1A being updated is ~20 + 55 + 43 = 118 cycles.
  *
  * Main loop requirement: softuart_task() must run at least once per Timer1
- * wrap (65536 ticks: 4 ms at 115200, more at lower rates) to keep the
- * 32-bit time extension right, and often enough to keep the edge ring
- * (128 edges, >11 frames) from overflowing.
+ * wrap minus a frame (~3.5 ms at 115200, more at lower rates) because the
+ * decoder works with 16-bit time, and often enough to keep the edge ring
+ * (127 edges, >11 frames) from overflowing.
  */
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -48,10 +48,14 @@
 #define TX_DDR     DDRB
 #define TX_BIT     PB5
 
-/* TCCR1A values: OC1A set (line high) / cleared (line low) on match */
-#define COM_SET    0xC0       /* COM1A1 | COM1A0 */
-#define COM_CLEAR  0x80       /* COM1A1 */
-#define CTL_START  0x01       /* queue flag: first edge of a frame (masked off before TCCR1A) */
+/* TCCR1A values: OC1A set (line high) / cleared (line low) on match; the
+ * codec's queue entries use the same codes */
+#define COM_SET    SU_CTL_HIGH
+#define COM_CLEAR  SU_CTL_LOW
+#define CTL_START  SU_CTL_START
+#if COM_SET != (_BV(COM1A1) | _BV(COM1A0)) || COM_CLEAR != _BV(COM1A1) || (CTL_START & (COM_SET | COM_CLEAR))
+#error queue control codes do not match TCCR1A
+#endif
 
 /* how far ahead of "now" a transmission restarting from idle is scheduled */
 #define TX_LEAD    32
@@ -86,8 +90,6 @@ static volatile uint8_t errors;
 static su_cfg_t         cfg;
 static su_enc_t         enc;
 static su_dec_t         dec;
-static uint16_t         time_hi;    /* upper half of the 32-bit time */
-static uint16_t         time_lo;    /* TCNT1 at the last timer_now() */
 
 /* ------------------------------------------------------------------------ */
 
@@ -242,7 +244,7 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 
 /* ------------------------------------------------------------------------ */
 
-static void rx_byte(uint8_t data, uint8_t flags)
+void su_rx_frame(uint8_t data, uint8_t flags)
 {
 	errors |= flags;
 	if (flags & SU_RX_BREAK)
@@ -258,47 +260,37 @@ static void rx_byte(uint8_t data, uint8_t flags)
 
 static void rx_task(void)
 {
-	uint16_t tcnt;
+	uint16_t now;
 	uint8_t  head, tccr1b;
 
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
-		tcnt = TCNT1;
+		now = TCNT1;
 		/* An edge captured while interrupts were masked is not in the ring
 		 * yet: take "now" as the time of that edge instead, so no sample
 		 * beyond it is taken with the old line level. */
 		if (TIFR1 & _BV(ICF1))
-		  tcnt = ICR1;
+		  now = ICR1;
 		head   = E_HEAD;
 		tccr1b = TCCR1B;
 	}
 
-	/* extend to 32 bits (we run at least once per wrap) */
-	if (tcnt < time_lo)
-	  time_hi++;
-	time_lo = tcnt;
-	uint32_t now = ((uint32_t)time_hi << 16) | tcnt;
+	/* nothing new, and no sample of a frame in progress is due yet */
+	uint8_t t = su_e_tail;
+	if (t == head && (!dec.in_frame || (uint16_t)(now - dec.start) <= *dec.next))
+	  goto check_overrun;
 
 	/* Captures alternate in polarity, and ICES1 is set up for the one after
 	 * the newest: if it waits for a rising edge, the newest was falling.
 	 * Work back from there to the level after the oldest unprocessed one. */
-	uint8_t t     = su_e_tail;
-	uint8_t count = (uint8_t)(head - t) / 2;
 	uint8_t level = (tccr1b & _BV(ICES1)) ? 0 : 1;
-	if (!(count & 1))
+	if (!(((uint8_t)(head - t) / 2) & 1))
 	  level ^= 1;
 
-	while (t != head)
-	{
-		uint16_t ts = bufs.e[t] | ((uint16_t)bufs.e[(uint8_t)(t + 1)] << 8);
-		su_dec_edge(&dec, &cfg, now - (uint16_t)(tcnt - ts), level, rx_byte);
-		level ^= 1;
-		t += 2;
-	}
-	su_e_tail = t;
+	su_dec_run(&dec, &cfg, bufs.e, t, head, level, now);
+	su_e_tail = head;
 
-	su_dec_time(&dec, &cfg, now, rx_byte);
-
+check_overrun:
 	if (su_e_overrun)
 	{
 		su_e_overrun = 0;
@@ -307,21 +299,28 @@ static void rx_task(void)
 }
 
 /* Encode bytes from the tx ring into the edge queue while there is room
- * for a worst case frame, then make sure the transmitter is running. */
+ * for a worst case frame, then make sure the transmitter is running.
+ *
+ * At most TX_ENCODE_BATCH frames are encoded per call: this keeps main loop
+ * iterations short so the receive side (which, unlike TX, cannot be held
+ * off) is serviced often. When the CPU runs short at high rates, TX then
+ * slows down by leaving gaps between frames instead of RX losing data. */
+#define TX_ENCODE_BATCH 2
+
+/* Receive has priority: while received edges are piling up (the decoder is
+ * falling behind), don't queue more TX frames - fewer frames on the wire
+ * also means fewer compare interrupts. */
+#define RX_BACKLOG_MAX  12      /* edges */
+
 static void softuart_tx_start(void)
 {
-	while (!ring_empty(&tx_ring) && Q_ENTRIES_FREE() >= SU_MAX_EDGES)
-	{
-		su_edge_t e[SU_MAX_EDGES];
-		uint8_t   n = su_encode(&cfg, &enc, ring_get(&tx_ring), e);
-		uint8_t   h = su_q_head;
+	if ((uint8_t)(E_HEAD - su_e_tail) > 2 * RX_BACKLOG_MAX)
+	  goto start;
 
-		for (uint8_t j = 0; j < n; j++, h += 4)
-		{
-			bufs.q[h]     = (uint8_t)e[j].delta;
-			bufs.q[h + 1] = (uint8_t)(e[j].delta >> 8);
-			bufs.q[h + 2] = (e[j].level ? COM_SET : COM_CLEAR) | (e[j].start ? CTL_START : 0);
-		}
+	for (uint8_t n = TX_ENCODE_BATCH;
+	     n && !ring_empty(&tx_ring) && Q_ENTRIES_FREE() >= SU_MAX_EDGES; n--)
+	{
+		uint8_t h = su_encode(&cfg, &enc, ring_get(&tx_ring), bufs.q, su_q_head);
 
 		/* publish the whole frame at once so the ISR never sees half of it */
 		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
@@ -331,6 +330,7 @@ static void softuart_tx_start(void)
 		}
 	}
 
+start:
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
 		uint8_t t = Q_TAIL;
@@ -395,7 +395,6 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 		TIFR1  = _BV(ICF1);
 		su_e_tail = E_HEAD;
 		su_dec_reset(&dec, line);
-		time_lo = TCNT1;
 	}
 }
 
