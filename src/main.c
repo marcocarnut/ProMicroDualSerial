@@ -18,6 +18,7 @@
 #include "Descriptors.h"
 #include "clock.h"
 #include "hwuart.h"
+#include "softuart.h"
 
 #define NUM_PORTS 2
 
@@ -32,30 +33,6 @@
 #define PEND_BREAK_OFF  _BV(2)
 
 #define LED_PULSE       CLOCK_MS(20)
-
-/* ---- Port 1 placeholder: loopback (replaced by the soft UART later) ---- */
-
-static ring_t           lb_tx, lb_rx;
-static volatile uint8_t lb_errors;
-
-static void lb_configure(const CDC_LineEncoding_t* le) { }
-static void lb_tx_start(void) { }
-static bool lb_tx_idle(void) { return true; }
-static void lb_set_break(bool on) { }
-static void lb_task(void)
-{
-	while (!ring_empty(&lb_tx) && ring_free(&lb_rx))
-	  ring_put(&lb_rx, ring_get(&lb_tx));
-}
-
-static const uart_port_t loopback_port =
-{
-	.tx = &lb_tx, .rx = &lb_rx, .errors = &lb_errors,
-	.configure = lb_configure, .task = lb_task, .tx_start = lb_tx_start,
-	.tx_idle = lb_tx_idle, .set_break = lb_set_break,
-};
-
-/* ------------------------------------------------------------------------ */
 
 typedef struct
 {
@@ -99,7 +76,7 @@ static USB_ClassInfo_CDC_Device_t cdc[NUM_PORTS] =
 static bridge_t bridge[NUM_PORTS] =
 {
 	{ .uart = &hwuart_port,   .line = DEFAULT_LINE },
-	{ .uart = &loopback_port, .line = DEFAULT_LINE },
+	{ .uart = &softuart_port, .line = DEFAULT_LINE },
 };
 
 static volatile bool enter_bootloader;
@@ -299,6 +276,7 @@ int main(void)
 	clock_init();
 	leds_init();
 	hwuart_init();
+	softuart_init();
 	USB_Init();
 	GlobalInterruptEnable();
 

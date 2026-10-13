@@ -7,3 +7,4 @@ obj/
 *.map
 *.sym
 test/build/
+test/sim/build/

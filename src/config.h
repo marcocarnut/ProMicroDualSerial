@@ -22,4 +22,10 @@
  * that speed reboots the board. Set to 0 to disable. */
 #define BOOTLOADER_1200BAUD_TOUCH  1
 
+/* ---- Soft UART (port 1) ----------------------------------------------
+ * Line codings outside this range are clamped. 115200 is the design target;
+ * at higher rates the margin for interrupt latency (one bit time) gets thin. */
+#define SOFTUART_MIN_BAUD          50
+#define SOFTUART_MAX_BAUD          230400
+
 #endif
