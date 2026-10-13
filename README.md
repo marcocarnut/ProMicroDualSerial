@@ -61,7 +61,8 @@ The RX and TX LEDs blink on UART activity.
   soft UART, whose TX is looped back to its RX (or, in the `rxgen` cases,
   RX is driven by an independent full-rate stream). It checks every byte,
   the error flags and the timing of every TX edge. Needs simavr >= 1.8 built
-  from source; see `test/sim/Makefile`. `test/sim/profile.py` turns a
+  from source (recommended: the `fixes` branch of github.com/marcocarnut/simavr,
+  see `test/sim/Makefile`). `test/sim/profile.py` turns a
   `PROFILE=` dump into a per-function cycle profile.
 * On hardware, wire TX0 -> pin 4 and pin 9 -> RX1 and run
   `tools/loopback_test.py`: data both ways through both UARTs at once for

@@ -2,11 +2,15 @@
 # firmware drivers (asm ISRs included) run in a simulated ATmega32U4 with
 # the soft UART's TX looped back into its RX.
 #
-# Needs simavr >= 1.8 (1.6, as packaged by Debian/Ubuntu, models Timer1's
-# compare output and multiple pending interrupts wrongly). Build it from
-# source and point the variables at it:
-#   git clone https://github.com/buserror/simavr && make -C simavr/simavr libsimavr
-#   make SIMAVR_INC=simavr/simavr/sim \
+# Needs a recent simavr built from source. 1.6, as packaged by Debian/Ubuntu,
+# models Timer1's compare output and multiple pending interrupts wrongly;
+# upstream master still fires a compare at OCR1x <= ~2 right after an
+# overflow one period late (rare, but this suite hits it). Recommended: the
+# "fixes" branch below, which has that fixed and also charges the 4 cycles
+# of interrupt entry like the silicon does:
+#   git clone -b fixes https://github.com/marcocarnut/simavr
+#   make -C simavr/simavr libsimavr
+#   make -j SIMAVR_INC=simavr/simavr/sim \
 #        SIMAVR_LIB="simavr/simavr/obj-x86_64-linux-gnu/libsimavr.a -lelf"
 
 SIMAVR_INC ?= /usr/include/simavr
@@ -27,11 +31,7 @@ FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(
 # firmware's "ready" pin standing in for USB flow control). With RXGEN=1 an
 # independent full-rate stream drives the soft RX pin instead of looping TX
 # back, so RX has to keep up at 100% while TX gets what CPU is left.
-#
-# Known simavr issue (master as of 2026-10): a compare match at OCR1x <= ~2
-# right after an overflow fires one period late (the overflow handler runs
-# a few cycles late and treats it as already past). Seed 1 of the 9600 8E2
-# CTS case hits it, so that case runs with seed 2 until it's fixed.
+
 CASES = \
 	115200_8N1_random:115200:8:0:0:random:2000 \
 	115200_8N1_55:115200:8:0:0:55:2000 \
@@ -54,7 +54,7 @@ CASES = \
 	rxgen_117647_8N1_random:115200:8:0:0:random:3000:RXGEN=1,RXGEN_BAUD=117647 \
 	rxgen_117647_8O1_random:115200:8:1:0:random:3000:RXGEN=1,RXGEN_BAUD=117647 \
 	cts_115200_8N1_random:115200:8:0:0:random:2000:CTS_TOGGLE=1 \
-	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1,SEED=2 \
+	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1 \
 	cts_unconnected_115200:115200:8:0:0:random:1000:CTS_NEVER=1
 
 all: run

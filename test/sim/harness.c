@@ -409,7 +409,7 @@ int main(int argc, char** argv)
 	static const int presc[] = { 1, 8, 64, 256, 1024 };
 	int cs = 0;
 	while (cs < 4 && F_CPU / presc[cs] / baud * 12 > 65000) cs++;
-	double tol = 2.0 * presc[cs] + 4;   /* + simavr instruction-granular timing */
+	double tol = 2.0 * presc[cs] + 8;   /* + simavr step granularity (instructions, interrupt entry) */
 
 	/* 2 + 3. decode PB5 independently and measure edge timing */
 	double bitc = F_CPU / baud;
