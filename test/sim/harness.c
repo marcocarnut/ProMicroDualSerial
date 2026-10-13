@@ -161,11 +161,27 @@ static avr_cycle_count_t gen_cb(struct avr_t* a, avr_cycle_count_t when, void* p
 	return gen_i < gen_n ? gen_t[gen_i] : 0;
 }
 
+/* CTS_TOGGLE mode: CTS is deasserted for random stretches; at most the one
+ * frame already committed may start after that */
+static avr_irq_t* cts_irq;
+static int        cts_toggle, cts_on = 1;
+static uint64_t   cts_t[100000];
+static uint8_t    cts_v[100000];
+static int        ncts;
+
+static void set_cts(int on)
+{
+	cts_on = on;
+	cts_t[ncts] = avr->cycle;
+	cts_v[ncts++] = on;
+	avr_raise_irq(cts_irq, !on);
+}
+
 static int fw_ready = 1;
 static void ready_cb(struct avr_irq_t* irq, uint32_t value, void* param) { fw_ready = value & 1; }
 
 static int err_pin;
-static const char* const err_names[8] = { "any", "soft-framing", 0, 0, "soft-parity", "soft-overrun", "soft-break", "hw-usart" };
+static const char* const err_names[6] = { "any", "soft-framing", "soft-parity", "soft-overrun", "soft-break", "hw-usart" };
 static void pf_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 {
 	int bit = (int)(intptr_t)param;
@@ -199,9 +215,15 @@ int main(int argc, char** argv)
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('1'), TIMER_IRQ_OUT_COMP + 0),
 	                        oc1a_changed, NULL);
-	for (int b = 0; b < 8; b++)
-	  if (err_names[b])
-	    avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('F'), b), pf_changed, (void*)(intptr_t)b);
+	{
+		static const char ports[6] = { 'D', 'D', 'D', 'D', 'D', 'E' };
+		static const int  bits_[6] = { 0, 1, 5, 6, 7, 6 };
+		for (int b = 0; b < 6; b++)
+		  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(ports[b]), bits_[b]), pf_changed, (void*)(intptr_t)b);
+	}
+	/* soft UART CTS (PF7, active low): asserted, or toggled with CTS_TOGGLE */
+	cts_irq = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('F'), 7);
+	cts_toggle = getenv("CTS_TOGGLE") != NULL;
 
 	avr_irq_t* uin = avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_INPUT);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUTPUT), uart_out, NULL);
@@ -286,6 +308,29 @@ int main(int argc, char** argv)
 		  prof[pc / 2] += (uint32_t)(avr->cycle - c0);
 		if (state == cpu_Done || state == cpu_Crashed) { fprintf(stderr, "cpu stopped (%d)\n", state); return 2; }
 
+		/* assert CTS once the firmware has set up its pull-up (an earlier
+		 * external drive would be overridden by it in simavr) */
+		static int cts_init;
+		if (!cts_init && avr->cycle >= 150000)
+		{
+			cts_init = 1;
+			set_cts(1);
+		}
+		/* hard limit: a stuck firmware fails instead of hanging */
+		if (avr->cycle > 2000000000ULL)
+		{
+			printf("simulation did not finish\n");
+			break;
+		}
+		if (cts_toggle && avr->cycle >= 300000)
+		{
+			static uint64_t next_cts = 300000;
+			if (avr->cycle >= next_cts && ncts < 99999)
+			{
+				set_cts(!cts_on);
+				next_cts = avr->cycle + (uint64_t)(frame * (cts_on ? 3 + rand() % 20 : 1 + rand() % 10)) + rand() % 1000;
+			}
+		}
 		if (fed < count && avr->cycle >= next && !uart_xoff && fw_ready)
 		{
 			avr_raise_irq(uin, sent[fed++]);
@@ -332,6 +377,36 @@ int main(int argc, char** argv)
 	for (int i = 0; i < nwant && i < nback; i++)
 	  if (back[i] != want[i]) { if (bad < 5) printf("  rx byte %d: got %02x want %02x\n", i, back[i], want[i]); bad++; }
 	printf("%s: sent %d, got %d, %d mismatches, error pin %d\n", rxgen ? "rx stream" : "loopback", nwant, nback, bad, err_pin);
+
+	/* CTS: a start bit may only appear while CTS is asserted, or within one
+	 * frame (+ ISR latency) of its deassertion - the frame the transmitter
+	 * had already committed to when CTS went away */
+	int cts_bad = 0;
+	if (cts_toggle)
+	{
+		double fl = (nb + 1 + 0.5 * stop) * (F_CPU / baud) + 300;
+		int c = 0, prev_lvl = 1;
+		for (int j = 0; j < nedges; j++)
+		{
+			if (edge_v[j] != 0 || (j && edge_v[j - 1] == 0)) continue;
+			/* is this falling edge a start bit? (preceded by >= 1 bit of high) */
+			if (j && edge_t[j] - edge_t[j - 1] < F_CPU / baud * 0.9 && prev_lvl) { }
+			while (c + 1 < ncts && cts_t[c + 1] <= edge_t[j]) c++;
+			if (ncts && cts_t[c] <= edge_t[j] && !cts_v[c] && edge_t[j] > cts_t[c] + fl)
+			{
+				/* only start bits count: a falling edge within a frame is fine
+				 * if its frame started in time - approximate by requiring the
+				 * line to have been high for at least the stop bit */
+				if (j == 0 || edge_t[j] - edge_t[j - 1] >= (F_CPU / baud) * (1 + 0.5 * stop) - 10)
+				{
+					if (cts_bad < 3) printf("  start bit at %llu while CTS deasserted since %llu\n",
+					                       (unsigned long long)edge_t[j], (unsigned long long)cts_t[c]);
+					cts_bad++;
+				}
+			}
+		}
+		printf("cts: %d toggles, %d violations\n", ncts, cts_bad);
+	}
 
 	/* edges may be off by the encoder's rounding (1 timer tick) and the
 	 * capture of frame starts (1 tick) */
@@ -415,7 +490,7 @@ int main(int argc, char** argv)
 	printf("waveform: %d frames, %d bad, worst edge deviation %.1f cycles (%.1f%% of a bit)\n",
 	       ndec, dbad, worst, 100 * worst / bitc);
 
-	int fail = bad || nback != nwant || err_pin || dbad || ndec != nsent || worst > tol;
+	int fail = cts_bad || bad || nback != nwant || err_pin || dbad || ndec != nsent || worst > tol;
 	printf("%s\n", fail ? "FAIL" : "PASS");
 	return fail;
 }

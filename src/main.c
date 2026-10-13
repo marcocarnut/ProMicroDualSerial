@@ -19,6 +19,7 @@
 #include "clock.h"
 #include "hwuart.h"
 #include "softuart.h"
+#include "gpio.h"
 
 #define NUM_PORTS 2
 
@@ -46,6 +47,8 @@ typedef struct
 	bool                in_last_full;      /* last IN packet was full size: a ZLP may be due */
 	uint16_t            serial_state;
 	uint16_t            serial_state_sent;
+	bool                rx_full;           /* RTS held off for lack of buffer space */
+	bool                ri_last;
 } bridge_t;
 
 static USB_ClassInfo_CDC_Device_t cdc[NUM_PORTS] =
@@ -97,6 +100,64 @@ static void leds_task(uint32_t now)
 	if (clock_reached(now, led_rx_until)) PORTB |= _BV(PB0); else PORTB &= ~_BV(PB0);
 	if (clock_reached(now, led_tx_until)) PORTD |= _BV(PD5); else PORTD &= ~_BV(PD5);
 }
+
+/* ---- Flow control and modem control lines ---- */
+
+/* One init / service function pair per port, generated for its pins. */
+#define MODEM_FUNCTIONS(n)                                                     \
+	static void modem##n##_init(void)                                          \
+	{                                                                          \
+		GPIO_SET(P##n##_RTS_PIN);              /* deasserted */                \
+		GPIO_OUTPUT(P##n##_RTS_PIN);                                           \
+		if (P##n##_HW_FLOW)                                                    \
+		  GPIO_INPUT_PU(P##n##_CTS_PIN);                                       \
+		if (MODEM_LINES)                                                       \
+		{                                                                      \
+			GPIO_SET(P##n##_DTR_PIN);                                          \
+			GPIO_OUTPUT(P##n##_DTR_PIN);                                       \
+			GPIO_INPUT_PU(P##n##_DSR_PIN);                                     \
+			GPIO_INPUT_PU(P##n##_DCD_PIN);                                     \
+			GPIO_INPUT_PU(P##n##_RI_PIN);                                      \
+		}                                                                      \
+	}                                                                          \
+	                                                                           \
+	static void modem##n##_task(void)                                          \
+	{                                                                          \
+		bridge_t* b    = &bridge[n];                                           \
+		uint16_t  host = cdc[n].State.ControlLineStates.HostToDevice;          \
+		bool      rts  = host & CDC_CONTROL_LINE_OUT_RTS;                      \
+		                                                                       \
+		if (P##n##_HW_FLOW)                                                    \
+		{                                                                      \
+			uint8_t room = ring_free(b->uart->rx);                             \
+			if (room < RTS_OFF_FREE)                                           \
+			  b->rx_full = true;                                               \
+			else if (room >= RTS_ON_FREE)                                      \
+			  b->rx_full = false;                                              \
+			rts = rts && !b->rx_full;                                          \
+		}                                                                      \
+		GPIO_ASSERT(P##n##_RTS_PIN, rts);                                      \
+		                                                                       \
+		if (MODEM_LINES)                                                       \
+		{                                                                      \
+			GPIO_ASSERT(P##n##_DTR_PIN, host & CDC_CONTROL_LINE_OUT_DTR);      \
+			                                                                   \
+			uint16_t st = b->serial_state &                                    \
+			              ~(CDC_CONTROL_LINE_IN_DCD | CDC_CONTROL_LINE_IN_DSR);  \
+			if (GPIO_ASSERTED(P##n##_DCD_PIN))                                 \
+			  st |= CDC_CONTROL_LINE_IN_DCD;                                   \
+			if (GPIO_ASSERTED(P##n##_DSR_PIN))                                 \
+			  st |= CDC_CONTROL_LINE_IN_DSR;                                   \
+			bool ri = GPIO_ASSERTED(P##n##_RI_PIN);                            \
+			if (ri && !b->ri_last)                                             \
+			  st |= CDC_CONTROL_LINE_IN_RING;    /* reported per ring */       \
+			b->ri_last      = ri;                                              \
+			b->serial_state = st;                                              \
+		}                                                                      \
+	}
+
+MODEM_FUNCTIONS(0)
+MODEM_FUNCTIONS(1)
 
 /* ---- Bootloader ---- */
 
@@ -219,6 +280,11 @@ static void bridge_task(uint8_t port, uint32_t now)
 
 	u->task();
 
+	if (port == 0)
+	  modem0_task();
+	else
+	  modem1_task();
+
 	uint8_t err;
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
@@ -273,8 +339,14 @@ int main(void)
 	wdt_disable();
 	clock_prescale_set(clock_div_1);
 
+	/* free PF4..PF7 from JTAG (must be written twice within 4 cycles) */
+	MCUCR = _BV(JTD);
+	MCUCR = _BV(JTD);
+
 	clock_init();
 	leds_init();
+	modem0_init();
+	modem1_init();
 	hwuart_init();
 	softuart_init();
 	USB_Init();

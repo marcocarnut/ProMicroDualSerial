@@ -16,10 +16,26 @@ Requires `avr-gcc`, `avr-libc` and `avrdude`.
 
 ## Wiring
 
-| Signal        | Port 0 (ttyACM0, USART1) | Port 1 (ttyACM1, soft UART) |
-|---------------|--------------------------|-----------------------------|
-| TX            | TX0 (PD3)                | 9 (PB5, OC1A)               |
-| RX            | RX1 (PD2)                | 4 (PD4, ICP1)               |
+| Signal       | Port 0 (ttyACM0, USART1) | Port 1 (ttyACM1, soft UART) | Direction |
+|--------------|--------------------------|-----------------------------|-----------|
+| TX           | TX0 (PD3)                | 9 (PB5, OC1A)               | out       |
+| RX           | RX1 (PD2)                | 4 (PD4, ICP1)               | in        |
+| RTS          | A3 (PF4)                 | A1 (PF6)                    | out       |
+| CTS          | A2 (PF5)                 | A0 (PF7)                    | in        |
+| DTR          | 15 (PB1)                 | 6 (PD7)                     | out       |
+| DSR          | 14 (PB3)                 | 5 (PC6)                     | in        |
+| DCD          | 16 (PB2)                 | 7 (PE6)                     | in        |
+| RI           | 10 (PB6)                 | 8 (PB4)                     | in        |
+
+All levels are 5 V TTL. The handshake lines are active low, like on an FTDI
+adapter. Inputs have pull-ups, so unconnected inputs read as deasserted. Pins
+and options are in `src/config.h`.
+
+**Flow control is on by default (`P0_HW_FLOW`, `P1_HW_FLOW`).** A port only
+transmits while its CTS is low, so tie CTS to GND if you don't use it.
+RTS is asserted while the host has the port open (host RTS set) and the
+receive buffer has room. With flow control off, RTS just follows the host.
+Breaks can be sent even while CTS holds off data.
 
 The RX and TX LEDs blink on UART activity.
 
@@ -73,6 +89,15 @@ at the same time.
 
 ## Status
 
-Milestone 3: port 1 is the timer soft UART (5-8 data bits, none/odd/even/
-mark/space parity, 1/1.5/2 stop bits, break, framing/parity/overrun
-reporting, 50..230400 baud).
+All four milestones are implemented:
+
+1. Dual CDC-ACM descriptors (two IADs). Linux enumerates ttyACM0/1.
+2. Port 0 on USART1: all CDC line codings (5-8 data bits, none/odd/even/
+   mark/space parity, 1/1.5/2 stop bits), 245 baud to 2 Mbaud, break both
+   ways, framing/parity/overrun/break reported to the host.
+3. Port 1 on the timer soft UART: the same line codings, 50 to 230400 baud
+   with exact bit timing.
+4. RTS/CTS flow control on both ports, plus DTR out and DSR/DCD/RI in.
+
+Also included: a 1200-baud touch to enter the Caterina bootloader
+(`BOOTLOADER_1200BAUD_TOUCH`) and activity LEDs.

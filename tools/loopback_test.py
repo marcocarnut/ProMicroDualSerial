@@ -2,19 +2,30 @@
 """
 Hardware test for ProMicroDualUART (stdlib only, Linux).
 
-Wire the two UARTs to each other:
+Wire the two UARTs to each other like a null modem cable:
 
-    TX0 (PD3)  ->  pin 4 (PD4, soft RX)
-    pin 9 (PB5, soft TX)  ->  RX1 (PD2)
+    TX0 (PD3)            ->  pin 4 (PD4, soft RX)
+    pin 9 (PB5, soft TX) ->  RX1 (PD2)
+    A3 (port 0 RTS)      ->  A0 (port 1 CTS)
+    A1 (port 1 RTS)      ->  A2 (port 0 CTS)
+
+and optionally, for --modem:
+
+    15 (port 0 DTR)      ->  5 (port 1 DSR)  and  7 (port 1 DCD)
+    6  (port 1 DTR)      ->  14 (port 0 DSR) and  16 (port 0 DCD)
 
 Then everything written to one port should come out of the other, through
 both the hardware USART and the soft UART, in both directions at once.
 
-    tools/loopback_test.py [/dev/ttyACM0] [/dev/ttyACM1]
+    tools/loopback_test.py [--modem] [--no-flow] [/dev/ttyACM0] [/dev/ttyACM1]
 
 For each line coding it sends random data both ways simultaneously and
 checks the received bytes and the line error counters (TIOCGICOUNT), then
-sends a break each way and checks it is reported as a break.
+sends a break each way and checks it is reported as a break. It then checks
+RTS/CTS flow control (dropping RTS on one port must stop the other port's
+transmitter) and, with --modem, that DTR shows up as DSR and DCD on the
+other side. Use --no-flow for firmware built with P0/P1_HW_FLOW = 0 (or
+without the RTS/CTS wires, with A2 and A0 tied to GND).
 """
 import array
 import fcntl
@@ -156,9 +167,71 @@ def run_case(fa, fb, baud, bits, parity, stop2, nbytes):
     return ok
 
 
+def set_line(fd, bit, on):
+    fcntl.ioctl(fd, termios.TIOCMBIS if on else termios.TIOCMBIC, struct.pack("I", bit))
+
+
+def get_lines(fd):
+    return struct.unpack("I", fcntl.ioctl(fd, termios.TIOCMGET, struct.pack("I", 0)))[0]
+
+
+def read_for(fd, seconds):
+    got = bytearray()
+    end = time.time() + seconds
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.02)
+        if r:
+            try:
+                got.extend(os.read(fd, 4096))
+            except BlockingIOError:
+                pass
+    return bytes(got)
+
+
+def test_flow(fa, fb):
+    """Dropping RTS on the receiving port must hold off the other transmitter."""
+    ok = True
+    for (src, dst, name) in ((fa, fb, "ACM0->ACM1"), (fb, fa, "ACM1->ACM0")):
+        configure(fa, 115200, 8, "N", False)
+        configure(fb, 115200, 8, "N", False)
+        drain(dst)
+        set_line(dst, termios.TIOCM_RTS, False)
+        time.sleep(0.05)
+        data = bytes(random.getrandbits(8) for _ in range(500))
+        os.write(src, data)
+        held = read_for(dst, 0.5)
+        set_line(dst, termios.TIOCM_RTS, True)
+        rest = read_for(dst, 0.5)
+        got = held + rest
+        # at most the frame(s) already committed may slip through
+        good = len(held) <= 2 and got == data
+        print("  flow %s: %d bytes leaked while held, %d/%d delivered after release  %s" %
+              (name, len(held), len(got), len(data), "ok" if good else "FAIL"))
+        ok &= good
+    return ok
+
+
+def test_modem(fa, fb):
+    """DTR on one side must show up as DSR and DCD on the other."""
+    ok = True
+    for (src, dst, name) in ((fa, fb, "ACM0->ACM1"), (fb, fa, "ACM1->ACM0")):
+        for on in (True, False, True):
+            set_line(src, termios.TIOCM_DTR, on)
+            time.sleep(0.1)
+            lines = get_lines(dst)
+            dsr = bool(lines & termios.TIOCM_DSR)
+            dcd = bool(lines & termios.TIOCM_CAR)
+            good = dsr == on and dcd == on
+            print("  modem %s: DTR %d -> DSR %d DCD %d  %s" % (name, on, dsr, dcd, "ok" if good else "FAIL"))
+            ok &= good
+    return ok
+
+
 def main():
-    pa = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyACM0"
-    pb = sys.argv[2] if len(sys.argv) > 2 else "/dev/ttyACM1"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    opts = [a for a in sys.argv[1:] if a.startswith("--")]
+    pa = args[0] if len(args) > 0 else "/dev/ttyACM0"
+    pb = args[1] if len(args) > 1 else "/dev/ttyACM1"
     fa, fb = open_port(pa), open_port(pb)
     random.seed(1)
 
@@ -177,7 +250,11 @@ def main():
         nbytes = max(20, min(4000, baud // 20))
         if not run_case(fa, fb, baud, bits, parity, stop2, nbytes):
             failed += 1
-    print("%d of %d cases failed" % (failed, len(cases)))
+    if "--no-flow" not in opts and not test_flow(fa, fb):
+        failed += 1
+    if "--modem" in opts and not test_modem(fa, fb):
+        failed += 1
+    print("%d failures" % failed)
     return 1 if failed else 0
 
 

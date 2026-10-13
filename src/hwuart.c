@@ -10,6 +10,9 @@
  *  - Break: TX line held low via the port pin with the USART transmitter off;
  *    received breaks (framing error with all-zero data) are reported as
  *    breaks, not as a 0x00 byte.
+ *  - CTS flow control (P0_HW_FLOW): checked before each byte is handed to
+ *    the USART, so at most the byte in progress and one in UDR1 go out
+ *    after CTS is deasserted.
  *
  * Limits at 16 MHz: 245 baud to 2 Mbaud. Requests outside are clamped.
  */
@@ -19,6 +22,13 @@
 
 #include "hwuart.h"
 #include "config.h"
+#include "gpio.h"
+
+#if P0_HW_FLOW
+#define CTS_BLOCKED() GPIO_READ(P0_CTS_PIN)    /* deasserted = high */
+#else
+#define CTS_BLOCKED() 0
+#endif
 
 static ring_t           tx_ring;
 static ring_t           rx_ring;
@@ -150,7 +160,8 @@ void hwuart_rx_body(void)
 /* Returns nonzero to keep the UDRE interrupt enabled. */
 uint8_t hwuart_udre_body(void)
 {
-	if (ring_empty(&tx_ring))
+	/* CTS is checked before each byte; one already in UDR1 still goes */
+	if (ring_empty(&tx_ring) || CTS_BLOCKED())
 	  return 0;
 
 	UDR1 = (ring_get(&tx_ring) & tx_mask) | tx_or;
@@ -250,7 +261,7 @@ static void hwuart_task(void)
 
 static void hwuart_tx_start(void)
 {
-	if (ring_empty(&tx_ring))
+	if (ring_empty(&tx_ring) || CTS_BLOCKED())
 	  return;
 
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
@@ -264,7 +275,7 @@ static bool hwuart_tx_idle(void)
 {
 	if (UCSR1B & _BV(UDRIE1))
 	  return false;
-	if (!ring_empty(&tx_ring))
+	if (!ring_empty(&tx_ring) && !CTS_BLOCKED())
 	  return false;
 	return !tx_started || (UCSR1A & _BV(TXC1));
 }

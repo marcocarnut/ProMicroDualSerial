@@ -18,7 +18,8 @@ LUFA     = $(ROOT)/lufa
 BUILD    = build
 MCUFLAGS = -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
-           -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall
+           -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \
+           -DP0_HW_FLOW=0 -DP1_HW_FLOW=1
 FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(SRC)/clock.c
 
 # name:baud:bits:parity:stop:pattern:count[:env]
@@ -40,7 +41,9 @@ CASES = \
 	300_7O2_random:300:7:1:2:random:30 \
 	rxgen_115200_8N1_random:115200:8:0:0:random:3000:RXGEN=1 \
 	rxgen_115200_8N1_55:115200:8:0:0:55:3000:RXGEN=1 \
-	rxgen_57600_7E1_ascii:57600:7:2:0:ascii:2000:RXGEN=1
+	rxgen_57600_7E1_ascii:57600:7:2:0:ascii:2000:RXGEN=1 \
+	cts_115200_8N1_random:115200:8:0:0:random:2000:CTS_TOGGLE=1 \
+	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1
 
 all: run
 
@@ -56,16 +59,28 @@ $(BUILD)/fw_$(1).elf: $(FW_SRC) $(wildcard $(SRC)/*.h)
 endef
 $(foreach c,$(CASES),$(eval $(call fw_rule,$(word 1,$(subst :, ,$(c))),$(word 2,$(subst :, ,$(c))),$(word 3,$(subst :, ,$(c))),$(word 4,$(subst :, ,$(c))),$(word 5,$(subst :, ,$(c))))))
 
-run: $(BUILD)/harness $(foreach c,$(CASES),$(BUILD)/fw_$(word 1,$(subst :, ,$(c))).elf)
-	@fail=0; for c in $(CASES); do \
-		set -- $$(echo $$c | tr ':' ' '); \
-		echo "== $$1"; \
-		out=$$(env LOAD=1 $${8:-} $(BUILD)/harness $(BUILD)/fw_$$1.elf $$2 $$3 $$4 $$5 $$6 $$7 2>&1); \
-		echo "$$out" | grep -vE '^Loaded|^  rx byte|^  waveform frame|^     '; \
-		echo "$$out" | grep -q '^PASS' || fail=1; \
+# one result file per case, so `make -j` runs them in parallel
+define case_rule
+$(BUILD)/res_$(1).txt: $(BUILD)/harness $(BUILD)/fw_$(1).elf
+	@env LOAD=1 $(8) $(BUILD)/harness $(BUILD)/fw_$(1).elf $(2) $(3) $(4) $(5) $(6) $(7) > $$@.tmp 2>&1; mv $$@.tmp $$@
+endef
+$(foreach c,$(CASES),$(eval $(call case_rule,$(word 1,$(subst :, ,$(c))),$(word 2,$(subst :, ,$(c))),$(word 3,$(subst :, ,$(c))),$(word 4,$(subst :, ,$(c))),$(word 5,$(subst :, ,$(c))),$(word 6,$(subst :, ,$(c))),$(word 7,$(subst :, ,$(c))),$(word 8,$(subst :, ,$(c))))))
+
+RESULTS = $(foreach c,$(CASES),$(BUILD)/res_$(word 1,$(subst :, ,$(c))).txt)
+
+run: $(RESULTS)
+	@fail=0; for r in $(RESULTS); do \
+		n=$$(basename $$r .txt); n=$${n#res_}; \
+		v=$$(tail -n1 $$r); \
+		printf '%-28s %-4s %s\n' "$$n" "$$v" "$$(grep -h 'throughput' $$r | sed 's/tx throughput: //')"; \
+		[ "$$v" = PASS ] || { grep -E 'error flag|mismatch|violation' $$r | sed 's/^/    /'; fail=1; }; \
 	done; exit $$fail
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run clean
+rerun:
+	rm -f $(BUILD)/res_*.txt
+	$(MAKE) run
+
+.PHONY: all run rerun clean

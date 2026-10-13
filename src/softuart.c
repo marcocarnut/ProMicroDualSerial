@@ -21,6 +21,9 @@
  *     The main loop turns the edge stream into bytes by sampling each bit
  *     in its middle.
  *
+ * CTS flow control (P1_HW_FLOW) is checked by the compare ISR when it is
+ * about to start a frame, so a frame in progress always completes.
+ *
  * Both ISRs are hand written: they are what limits the usable baud rate.
  * At 16 MHz and 115200 baud a bit is 139 cycles; the capture ISR flips the
  * polarity 23 cycles after entry and takes 55 in total, the compare ISR
@@ -40,6 +43,13 @@
 #include "softuart.h"
 #include "softuart_codec.h"
 #include "config.h"
+#include "gpio.h"
+
+#if P1_HW_FLOW
+#define CTS_BLOCKED() GPIO_READ(P1_CTS_PIN)    /* deasserted = high */
+#else
+#define CTS_BLOCKED() 0
+#endif
 
 #define RX_PORT    PORTD
 #define RX_PIN     PIND
@@ -160,6 +170,15 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 
 		/* RUN: program the next queued edge */
 		"ldi  r31, hi8(%[qbuf])"    "\n\t"
+#if P1_HW_FLOW
+		/* at a frame boundary, only go on while CTS is asserted (low) */
+		"ldd  r25, Z+2"             "\n\t"
+		"sbrs r25, 0"               "\n\t"   /* CTL_START */
+		"rjmp 5f"                   "\n\t"
+		"sbic %[ctspin], %[ctsbit]" "\n\t"
+		"rjmp 6f"                   "\n\t"
+	"5:"
+#endif
 		"ld   r25, Z+"              "\n\t"   /* delta lo */
 		"lds  r24, %[ocrl]"         "\n\t"
 		"add  r24, r25"             "\n\t"
@@ -182,12 +201,22 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 		"pop  r24"                  "\n\t"
 		"reti"                      "\n\t"
 
+#if P1_HW_FLOW
+		/* CTS deasserted at a frame boundary: leave the frame queued and
+		 * time the end of the previous one's stop bits (its start edge's
+		 * delta) like an empty queue */
+	"6:"	"lds  r24, %[ocrl]"         "\n\t"
+		"ld   r25, Z+"              "\n\t"
+		"add  r24, r25"             "\n\t"
+		"ld   r25, Z"               "\n\t"
+		"rjmp 7f"                   "\n\t"
+#endif
 		/* RUN, queue empty: time the end of the stop bits */
 	"2:"	"lds  r24, %[ocrl]"         "\n\t"
 		"lds  r25, %[ttail]"        "\n\t"
 		"add  r24, r25"             "\n\t"
 		"lds  r25, %[ttail]+1"      "\n\t"
-		"lds  r31, %[ocrh]"         "\n\t"
+	"7:"	"lds  r31, %[ocrh]"         "\n\t"
 		"adc  r31, r25"             "\n\t"
 		"sts  %[ocrh], r31"         "\n\t"
 		"sts  %[ocrl], r24"         "\n\t"
@@ -200,6 +229,10 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 		/* DRAIN: the stop bits are done */
 	"3:"	"cp   r30, r24"             "\n\t"
 		"breq 4f"                   "\n\t"
+#if P1_HW_FLOW
+		"sbic %[ctspin], %[ctsbit]" "\n\t"
+		"rjmp 4f"                   "\n\t"
+#endif
 		/* a frame was queued meanwhile: start it now (skipping its
 		 * start edge's delta, which assumed back to back frames) */
 		"subi r30, -4"              "\n\t"
@@ -237,6 +270,8 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 		[nocie]   "M" (~_BV(OCIE1A) & 0xFF),
 		[lead]    "I" (TX_LEAD),
 		[qbuf]    "i" (bufs.q),
+		[ctspin]  "I" (_SFR_IO_ADDR(GPIO_PINREG(P1_CTS_PIN))),
+		[ctsbit]  "I" (GPIO_BIT(P1_CTS_PIN)),
 		[qhead]   "i" (&su_q_head),
 		[ttail]   "i" (&su_tx_tail_ticks)
 	);
@@ -334,7 +369,7 @@ start:
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
 		uint8_t t = Q_TAIL;
-		if (!(GPIOR0 & (_BV(TXS_RUN) | _BV(TXS_DRAIN))) && t != su_q_head)
+		if (!(GPIOR0 & (_BV(TXS_RUN) | _BV(TXS_DRAIN))) && t != su_q_head && !CTS_BLOCKED())
 		{
 			/* the first queued edge is a start bit; begin right away */
 			Q_TAIL  = t + 4;
@@ -349,7 +384,9 @@ start:
 
 static bool softuart_tx_idle(void)
 {
-	return !(GPIOR0 & (_BV(TXS_RUN) | _BV(TXS_DRAIN))) && Q_TAIL == su_q_head && ring_empty(&tx_ring);
+	if (GPIOR0 & (_BV(TXS_RUN) | _BV(TXS_DRAIN)))
+	  return false;
+	return (Q_TAIL == su_q_head && ring_empty(&tx_ring)) || CTS_BLOCKED();
 }
 
 static void softuart_set_break(bool on)

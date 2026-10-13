@@ -5,7 +5,9 @@
  * byte fed into USART1 should come back out of it, having gone through the
  * soft UART's encoder, compare ISR, capture ISR and decoder.
  *
- * Soft UART errors are latched on PF0 for the harness to see.
+ * Error flags are latched on port D/E pins for the harness to see. The soft
+ * UART is built with CTS flow control (P1_HW_FLOW, CTS on PF7) so the
+ * harness can exercise it; it holds CTS asserted unless testing it.
  */
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -38,7 +40,9 @@ static void move(ring_t* from, ring_t* to)
 
 int main(void)
 {
-	DDRF |= _BV(PF0) | _BV(PF1) | _BV(PF4) | _BV(PF5) | _BV(PF6) | _BV(PF7);
+	DDRD |= _BV(PD0) | _BV(PD1) | _BV(PD5) | _BV(PD6) | _BV(PD7);
+	DDRE |= _BV(PE6);
+	PORTF |= _BV(PF7);        /* CTS input pull-up */
 
 	clock_init();
 	hwuart_init();
@@ -79,13 +83,13 @@ int main(void)
 			*softuart_port.errors = 0;
 			*hwuart_port.errors = 0;
 		}
-		/* PF0: any error, PF1: soft framing, PF4: soft parity, PF5: soft
-		 * overrun, PF6: soft break, PF7: hardware USART error */
-		if (serr | herr)                               PORTF |= _BV(PF0);
-		if (serr & CDC_CONTROL_LINE_IN_FRAMEERROR)     PORTF |= _BV(PF1);
-		if (serr & CDC_CONTROL_LINE_IN_PARITYERROR)    PORTF |= _BV(PF4);
-		if (serr & CDC_CONTROL_LINE_IN_OVERRUNERROR)   PORTF |= _BV(PF5);
-		if (serr & CDC_CONTROL_LINE_IN_BREAK)          PORTF |= _BV(PF6);
-		if (herr)                                      PORTF |= _BV(PF7);
+		/* PD0: any error, PD1: soft framing, PD5: soft parity, PD6: soft
+		 * overrun, PD7: soft break, PE6: hardware USART error */
+		if (serr | herr)                               PORTD |= _BV(PD0);
+		if (serr & CDC_CONTROL_LINE_IN_FRAMEERROR)     PORTD |= _BV(PD1);
+		if (serr & CDC_CONTROL_LINE_IN_PARITYERROR)    PORTD |= _BV(PD5);
+		if (serr & CDC_CONTROL_LINE_IN_OVERRUNERROR)   PORTD |= _BV(PD6);
+		if (serr & CDC_CONTROL_LINE_IN_BREAK)          PORTD |= _BV(PD7);
+		if (herr)                                      PORTE |= _BV(PE6);
 	}
 }
