@@ -16,4 +16,5 @@ Requires `avr-gcc`, `avr-libc` and `avrdude`.
 
 ## Status
 
-Milestone 1: both CDC interfaces enumerate and echo back what they receive.
+Milestone 2: port 0 bridges to the hardware USART (all CDC line codings incl.
+mark/space parity, break, error reporting); port 1 is a loopback placeholder.
