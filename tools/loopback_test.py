@@ -9,15 +9,15 @@ Wire the two UARTs to each other like a null modem cable:
     A3 (port 0 RTS)      ->  A0 (port 1 CTS)
     A1 (port 1 RTS)      ->  A2 (port 0 CTS)
 
-and optionally, for --modem:
+and optionally, for --modem (and --dcd, with the DCD wires too):
 
-    15 (port 0 DTR)      ->  5 (port 1 DSR)  and  7 (port 1 DCD)
-    6  (port 1 DTR)      ->  14 (port 0 DSR) and  16 (port 0 DCD)
+    15 (port 0 DTR)      ->  5 (port 1 DSR)  [and 7 (port 1 DCD)]
+    6  (port 1 DTR)      ->  14 (port 0 DSR) [and 16 (port 0 DCD)]
 
 Then everything written to one port should come out of the other, through
 both the hardware USART and the soft UART, in both directions at once.
 
-    tools/loopback_test.py [--modem] [--no-flow] [/dev/ttyACM0] [/dev/ttyACM1]
+    tools/loopback_test.py [--modem [--dcd]] [--no-flow] [/dev/ttyACM0] [/dev/ttyACM1]
 
 For each line coding it sends random data both ways simultaneously and
 checks the received bytes and the line error counters (TIOCGICOUNT), then
@@ -212,8 +212,8 @@ def test_flow(fa, fb):
     return ok
 
 
-def test_modem(fa, fb):
-    """DTR on one side must show up as DSR and DCD on the other."""
+def test_modem(fa, fb, dcd_wired):
+    """DTR on one side must show up as DSR (and DCD, if wired) on the other."""
     ok = True
     for (src, dst, name) in ((fa, fb, "ACM0->ACM1"), (fb, fa, "ACM1->ACM0")):
         for on in (True, False, True):
@@ -222,7 +222,7 @@ def test_modem(fa, fb):
             lines = get_lines(dst)
             dsr = bool(lines & termios.TIOCM_DSR)
             dcd = bool(lines & termios.TIOCM_CAR)
-            good = dsr == on and dcd == on
+            good = dsr == on and (dcd == on or not dcd_wired)
             print("  modem %s: DTR %d -> DSR %d DCD %d  %s" % (name, on, dsr, dcd, "ok" if good else "FAIL"))
             ok &= good
     return ok
@@ -253,7 +253,7 @@ def main():
             failed += 1
     if "--no-flow" not in opts and not test_flow(fa, fb):
         failed += 1
-    if "--modem" in opts and not test_modem(fa, fb):
+    if "--modem" in opts and not test_modem(fa, fb, "--dcd" in opts):
         failed += 1
     print("%d failures" % failed)
     return 1 if failed else 0
