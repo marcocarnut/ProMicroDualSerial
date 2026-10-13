@@ -25,11 +25,14 @@
  * about to start a frame, so a frame in progress always completes.
  *
  * Both ISRs are hand written: they are what limits the usable baud rate.
- * At 16 MHz and 115200 baud a bit is 139 cycles; the capture ISR flips the
- * polarity 23 cycles after entry and takes 55 in total, the compare ISR
- * reprograms OCR1A 43 cycles after entry and takes 63. The USART ISRs
- * re-enable interrupts within ~20 cycles (see hwuart.c), so the worst case
- * from a compare match to OCR1A being updated is ~20 + 55 + 43 = 118 cycles.
+ * At 16 MHz and 115200 baud a bit is 139 cycles. Counting from the
+ * interrupt request (4 cycle response + jmp), the capture ISR flips the
+ * polarity after 22 cycles and takes 53 in total (55 on overrun); the
+ * compare ISR has OCR1A and COM1A updated after 50 cycles and takes 68 for
+ * a data edge, 71 for a start edge, 66 at the end of a burst and 75 when
+ * CTS holds a frame. The USART ISRs re-enable interrupts after 20 cycles
+ * (see hwuart.c), so the worst case from a compare match to OCR1A being
+ * updated is 20 + 55 + 50 = 125 cycles.
  *
  * Main loop requirement: softuart_task() must run at least once per Timer1
  * wrap minus a frame (~3.5 ms at 115200, more at lower rates) because the
