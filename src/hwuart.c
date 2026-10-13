@@ -50,73 +50,182 @@ static uint8_t rx_emul_flags;  /* EMUL_* below */
 
 /*
  * The USART interrupts must not hold off the soft UART's timer interrupts
- * (see softuart.c), so each is a short stub that masks its own source,
- * re-enables interrupts and only then saves the remaining registers and
- * runs the C body. Interrupts are blocked for ~20 cycles instead of ~60.
- * 'exit_test' decides whether the source is unmasked again on exit: always
- * for RX, and for UDRE only when the body returns nonzero (more to send).
+ * (see softuart.c), so each masks its own source and re-enables interrupts
+ * within ~17 cycles. The common case is then handled in asm with three
+ * more registers saved: RX of a byte without errors or emulated parity
+ * into a ring with room (~70 cycles in total), UDRE with a byte to send
+ * (~75). Anything else goes to the C body with the remaining call-clobbered
+ * registers saved. The source is unmasked again on exit, except for UDRE
+ * when there is nothing (more) to send.
  */
-#define NESTABLE_USART_ISR(vect, enable_bit, body, exit_test)              \
-	ISR(vect, ISR_NAKED)                                                 \
-	{                                                                    \
-		asm volatile(                                                    \
-			"push r24"                  "\n\t"                           \
-			"in   r24, __SREG__"        "\n\t"                           \
-			"push r24"                  "\n\t"                           \
-			"lds  r24, %[ucsrb]"        "\n\t"                           \
-			"andi r24, %[off]"          "\n\t"                           \
-			"sts  %[ucsrb], r24"        "\n\t"                           \
-			"sei"                       "\n\t"                           \
-			"push r0"                   "\n\t"                           \
-			"push r1"                   "\n\t"                           \
-			"clr  r1"                   "\n\t"                           \
-			"push r18"                  "\n\t"                           \
-			"push r19"                  "\n\t"                           \
-			"push r20"                  "\n\t"                           \
-			"push r21"                  "\n\t"                           \
-			"push r22"                  "\n\t"                           \
-			"push r23"                  "\n\t"                           \
-			"push r25"                  "\n\t"                           \
-			"push r26"                  "\n\t"                           \
-			"push r27"                  "\n\t"                           \
-			"push r30"                  "\n\t"                           \
-			"push r31"                  "\n\t"                           \
-			"call " #body               "\n\t"                           \
-			"pop  r31"                  "\n\t"                           \
-			"pop  r30"                  "\n\t"                           \
-			"pop  r27"                  "\n\t"                           \
-			"pop  r26"                  "\n\t"                           \
-			"pop  r25"                  "\n\t"                           \
-			"pop  r23"                  "\n\t"                           \
-			"pop  r22"                  "\n\t"                           \
-			"pop  r21"                  "\n\t"                           \
-			"pop  r20"                  "\n\t"                           \
-			"pop  r19"                  "\n\t"                           \
-			"pop  r18"                  "\n\t"                           \
-			"pop  r1"                   "\n\t"                           \
-			"pop  r0"                   "\n\t"                           \
-			"cli"                       "\n\t"                           \
-			exit_test                                                    \
-			"lds  r24, %[ucsrb]"        "\n\t"                           \
-			"ori  r24, %[on]"           "\n\t"                           \
-			"sts  %[ucsrb], r24"        "\n\t"                           \
-		"1:"	"pop  r24"                  "\n\t"                           \
-			"out  __SREG__, r24"        "\n\t"                           \
-			"pop  r24"                  "\n\t"                           \
-			"reti"                      "\n\t"                           \
-			::                                                           \
-			[ucsrb] "n" (_SFR_MEM_ADDR(UCSR1B)),                         \
-			[off]   "M" (~_BV(enable_bit) & 0xFF),                       \
-			[on]    "M" (_BV(enable_bit))                                \
-		);                                                               \
-	}
+#define ISR_ENTER                                                          \
+		"push r24"                  "\n\t"                           \
+		"in   r24, __SREG__"        "\n\t"                           \
+		"push r24"                  "\n\t"                           \
+		"lds  r24, %[ucsrb]"        "\n\t"                           \
+		"andi r24, %[off]"          "\n\t"                           \
+		"sts  %[ucsrb], r24"        "\n\t"                           \
+		"sei"                       "\n\t"                           \
+		"push r25"                  "\n\t"                           \
+		"push r30"                  "\n\t"                           \
+		"push r31"                  "\n\t"
 
-void    hwuart_rx_body(void)   __attribute__((used));
-uint8_t hwuart_udre_body(void) __attribute__((used));
+/* the rest of what a C function may clobber, around 'call' */
+#define CALL_C(fn)                                                         \
+		"push r0"                   "\n\t"                           \
+		"push r1"                   "\n\t"                           \
+		"clr  r1"                   "\n\t"                           \
+		"push r18"                  "\n\t"                           \
+		"push r19"                  "\n\t"                           \
+		"push r20"                  "\n\t"                           \
+		"push r21"                  "\n\t"                           \
+		"push r22"                  "\n\t"                           \
+		"push r23"                  "\n\t"                           \
+		"push r26"                  "\n\t"                           \
+		"push r27"                  "\n\t"                           \
+		"call " #fn                 "\n\t"                           \
+		"pop  r27"                  "\n\t"                           \
+		"pop  r26"                  "\n\t"                           \
+		"pop  r23"                  "\n\t"                           \
+		"pop  r22"                  "\n\t"                           \
+		"pop  r21"                  "\n\t"                           \
+		"pop  r20"                  "\n\t"                           \
+		"pop  r19"                  "\n\t"                           \
+		"pop  r18"                  "\n\t"                           \
+		"pop  r1"                   "\n\t"                           \
+		"pop  r0"                   "\n\t"
 
-NESTABLE_USART_ISR(USART1_RX_vect,   RXCIE1, hwuart_rx_body,   "")
-NESTABLE_USART_ISR(USART1_UDRE_vect, UDRIE1, hwuart_udre_body, "tst r24\n\tbreq 1f\n\t")
+#define ISR_EXIT_UNMASK                                                    \
+		"pop  r31"                  "\n\t"                           \
+		"pop  r30"                  "\n\t"                           \
+		"pop  r25"                  "\n\t"                           \
+		"cli"                       "\n\t"                           \
+		"lds  r24, %[ucsrb]"        "\n\t"                           \
+		"ori  r24, %[on]"           "\n\t"                           \
+		"sts  %[ucsrb], r24"        "\n\t"                           \
+		"pop  r24"                  "\n\t"                           \
+		"out  __SREG__, r24"        "\n\t"                           \
+		"pop  r24"                  "\n\t"                           \
+		"reti"                      "\n\t"
 
+#define ISR_EXIT_MASKED                                                    \
+		"pop  r31"                  "\n\t"                           \
+		"pop  r30"                  "\n\t"                           \
+		"pop  r25"                  "\n\t"                           \
+		"cli"                       "\n\t"                           \
+		"pop  r24"                  "\n\t"                           \
+		"out  __SREG__, r24"        "\n\t"                           \
+		"pop  r24"                  "\n\t"                           \
+		"reti"                      "\n\t"
+
+void hwuart_rx_body(void) __attribute__((used));
+
+ISR(USART1_RX_vect, ISR_NAKED)
+{
+	asm volatile(
+		ISR_ENTER
+		"lds  r25, %[ucsra]"        "\n\t"
+		"andi r25, %[errs]"         "\n\t"
+		"lds  r24, %[emul]"         "\n\t"
+		"or   r25, r24"             "\n\t"
+		"brne 8f"                   "\n\t"
+		"lds  r30, %[head]"         "\n\t"
+		"lds  r24, %[tail]"         "\n\t"
+		"mov  r25, r30"             "\n\t"
+		"sub  r25, r24"             "\n\t"
+		"cpi  r25, %[size]"         "\n\t"
+		"breq 8f"                   "\n\t"   /* ring full */
+		"lds  r24, %[udr]"          "\n\t"
+		"mov  r25, r30"             "\n\t"
+		"inc  r25"                  "\n\t"
+		"andi r30, %[mask]"         "\n\t"
+		"ldi  r31, 0"               "\n\t"
+		"subi r30, lo8(-(%[buf]))"  "\n\t"
+		"sbci r31, hi8(-(%[buf]))"  "\n\t"
+		"st   Z, r24"               "\n\t"
+		"sts  %[head], r25"         "\n\t"
+	"9:"
+		ISR_EXIT_UNMASK
+	"8:"	/* errors, emulated parity or a full ring */
+		CALL_C(hwuart_rx_body)
+		"rjmp 9b"                   "\n\t"
+		::
+		[ucsrb] "n" (_SFR_MEM_ADDR(UCSR1B)),
+		[ucsra] "n" (_SFR_MEM_ADDR(UCSR1A)),
+		[udr]   "n" (_SFR_MEM_ADDR(UDR1)),
+		[off]   "M" (~_BV(RXCIE1) & 0xFF),
+		[on]    "M" (_BV(RXCIE1)),
+		[errs]  "M" (_BV(FE1) | _BV(DOR1) | _BV(UPE1)),
+		[emul]  "i" (&rx_emul_flags),
+		[head]  "i" (&rx_ring.head),
+		[tail]  "i" (&rx_ring.tail),
+		[buf]   "i" (rx_ring.buf),
+		[size]  "M" (RING_SIZE),
+		[mask]  "M" (RING_MASK)
+	);
+}
+
+ISR(USART1_UDRE_vect, ISR_NAKED)
+{
+	asm volatile(
+		ISR_ENTER
+		"lds  r30, %[tail]"         "\n\t"
+		"lds  r24, %[head]"         "\n\t"
+		"cp   r30, r24"             "\n\t"
+		"breq 7f"                   "\n\t"   /* nothing to send */
+#if P0_HW_FLOW
+		/* CTS is checked before each byte; one already in UDR1 still goes */
+#if P0_HW_FLOW == FLOW_AUTO
+		"lds  r24, %[armed]"        "\n\t"
+		"tst  r24"                  "\n\t"
+		"breq 1f"                   "\n\t"
+#endif
+		"sbic %[ctspin], %[ctsbit]" "\n\t"
+		"rjmp 7f"                   "\n\t"
+	"1:"
+#endif
+		"mov  r25, r30"             "\n\t"
+		"inc  r25"                  "\n\t"
+		"andi r30, %[mask]"         "\n\t"
+		"ldi  r31, 0"               "\n\t"
+		"subi r30, lo8(-(%[buf]))"  "\n\t"
+		"sbci r31, hi8(-(%[buf]))"  "\n\t"
+		"ld   r24, Z"               "\n\t"
+		"lds  r30, %[txmask]"       "\n\t"
+		"and  r24, r30"             "\n\t"
+		"lds  r30, %[txor]"         "\n\t"
+		"or   r24, r30"             "\n\t"
+		"sts  %[udr], r24"          "\n\t"
+		"sts  %[tail], r25"         "\n\t"
+		/* clear TXC1 so tx_idle() can tell when this byte has left the wire */
+		"lds  r24, %[ucsra]"        "\n\t"
+		"andi r24, %[u2x]"          "\n\t"
+		"ori  r24, %[txc]"          "\n\t"
+		"sts  %[ucsra], r24"        "\n\t"
+		ISR_EXIT_UNMASK
+	"7:"
+		ISR_EXIT_MASKED
+		::
+		[ucsrb]  "n" (_SFR_MEM_ADDR(UCSR1B)),
+		[ucsra]  "n" (_SFR_MEM_ADDR(UCSR1A)),
+		[udr]    "n" (_SFR_MEM_ADDR(UDR1)),
+		[off]    "M" (~_BV(UDRIE1) & 0xFF),
+		[on]     "M" (_BV(UDRIE1)),
+		[u2x]    "M" (_BV(U2X1)),
+		[txc]    "M" (_BV(TXC1)),
+		[armed]  "i" (&cts_armed),
+		[ctspin] "I" (_SFR_IO_ADDR(GPIO_PINREG(P0_CTS_PIN))),
+		[ctsbit] "I" (GPIO_BIT(P0_CTS_PIN)),
+		[head]   "i" (&tx_ring.head),
+		[tail]   "i" (&tx_ring.tail),
+		[buf]    "i" (tx_ring.buf),
+		[mask]   "M" (RING_MASK),
+		[txmask] "i" (&tx_mask),
+		[txor]   "i" (&tx_or)
+	);
+}
+
+/* RX, the uncommon cases (see above) */
 void hwuart_rx_body(void)
 {
 	uint8_t status = UCSR1A;
@@ -159,19 +268,6 @@ void hwuart_rx_body(void)
 		return;
 	}
 	ring_put(&rx_ring, data);
-}
-
-/* Returns nonzero to keep the UDRE interrupt enabled. */
-uint8_t hwuart_udre_body(void)
-{
-	/* CTS is checked before each byte; one already in UDR1 still goes */
-	if (ring_empty(&tx_ring) || CTS_BLOCKED())
-	  return 0;
-
-	UDR1 = (ring_get(&tx_ring) & tx_mask) | tx_or;
-	/* clear TXC1 so tx_idle() can tell when this byte has left the wire */
-	UCSR1A = (UCSR1A & _BV(U2X1)) | _BV(TXC1);
-	return 1;
 }
 
 /* Pick UBRR and U2X for the closest achievable rate. */

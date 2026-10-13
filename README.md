@@ -93,10 +93,13 @@ Timer1 runs free with a per-baud prescaler.
   decoder on random edge streams. The decoder is a state machine whose
   state (idle or in a frame, line high or low) is the code position, so an
   edge that completes no sample costs ~18 cycles.
-* **Interrupt latency:** both ISRs are hand-written asm (53 and 68 cycles
-  including interrupt entry). The USART ISRs re-enable interrupts after 20
-  cycles so they can't hold off the timer ISRs. At 115200 a bit is 139 CPU
-  cycles, and the worst-case latency chain is 125 cycles.
+* **Interrupt latency:** the timer ISRs are hand-written asm (capture 53
+  cycles including interrupt entry, 45 with `SU_TX_MODE=3`; edge queue
+  compare 68). The USART ISRs re-enable interrupts after ~17 cycles so they
+  can't hold off the timer ISRs, and handle the common case (a clean byte
+  in, the next byte out) in asm with three registers saved (~70 cycles);
+  errors and emulated mark/space parity go to C. At 115200 a bit is 139 CPU
+  cycles.
 * **Per-bit TX (`SU_TX_MODE=3`, experimental):** Timer3 in CTC mode ticks
   once per bit and its compare ISR shifts the next bit of a 16-bit frame
   word into OC3A's set/clear mode, so the pin still switches in hardware on
@@ -110,33 +113,32 @@ Timer1 runs free with a per-baud prescaler.
   on a UART line, and the host is held off by USB flow control), while RX
   doesn't lose data.
 
-### Throughput (simulated, 16 MHz)
+### Throughput
 
-Each line transition costs an interrupt plus main loop work, so the load
-depends on the data pattern. In these tests port 0 carries the same traffic
-at the same time.
-
-| Soft UART load                                   | Result                           |
-|--------------------------------------------------|----------------------------------|
-| <= 57600, full duplex, continuous                | 100% of line rate both ways      |
-| 115200, RX continuous at 100%                    | lossless                         |
-| 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~58% of line rate|
-| 115200, full duplex loopback, random data        | TX/RX ~68% of line rate          |
-| 115200, full duplex loopback, 0x55 (worst case)  | ~50%                             |
-| 230400, RX continuous                            | beyond the CPU: bursts only      |
-
-With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~98%; 0x55
-~74%; RX at 100% plus TX offered: TX ~81-99%. On the board, full duplex
-8N1 / 8E1 / 7O1: soft TX 81% / 87% / 76%, soft RX 100%.
-
-Measured on a Pro Micro with port 0 looped to port 1 (both directions at
-once, random data, host-side timing):
+Measured on a Pro Micro with port 0 looped to port 1, random data, both
+directions at once and sustained (the soft TX figure is taken while soft RX
+runs at 100% throughout), host-side timing, `SU_TX_MODE=3`:
 
 | 115200                         | hw -> soft (soft RX) | soft -> hw (soft TX) |
 |--------------------------------|----------------------|----------------------|
 | one direction at a time        | 100%                 | 100%                 |
-| full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 56% / 56% / 55%      |
-| 57600 full duplex              | 100%                 | 100%                 |
+| full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 100% / 100% / 100%   |
+
+In the simulator (port 0 carries the same traffic at the same time; with
+the default edge queue transmitter in brackets):
+
+| Soft UART load                                   | Result                              |
+|--------------------------------------------------|-------------------------------------|
+| <= 57600, full duplex, continuous                | 100% of line rate both ways         |
+| 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~100% (~70%)        |
+| 115200, full duplex loopback, random data        | ~100% (~81%)                        |
+| 115200, full duplex loopback, 0x55 (worst case)  | ~79% (~58%)                         |
+| 230400, RX continuous                            | beyond the CPU: bursts only         |
+
+With the edge queue each line transition costs an interrupt plus encoder
+work, so its load depends on the data pattern; the per-bit transmitter
+costs the same for any data, and 0x55 is then limited by the receive side
+(every bit boundary is an edge).
 
 ## Status
 
