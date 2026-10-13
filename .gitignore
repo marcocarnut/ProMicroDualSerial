@@ -1,0 +1,9 @@
+obj/
+*.elf
+*.hex
+*.eep
+*.bin
+*.lss
+*.map
+*.sym
+test/build/
