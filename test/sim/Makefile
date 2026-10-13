@@ -19,8 +19,11 @@ SIMAVR_LIB ?= -l:libsimavr.so.2 -lelf
 ROOT     = ../..
 SRC      = $(ROOT)/src
 LUFA     = $(ROOT)/lufa
-BUILD    = build
-MCUFLAGS = $(EXTRA) -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
+BUILD    = build$(if $(filter-out 0,$(SU_TX_MODE)),_tx$(SU_TX_MODE))
+# SU_TX_MODE=3 tests the per-bit Timer3 transmitter (see src/config.h)
+SU_TX_MODE ?= 0
+RESERVED = $(if $(filter-out 0,$(SU_TX_MODE)),-DSU_REGS_RESERVED $(foreach r,2 3 4 5 6,-ffixed-r$(r)))
+MCUFLAGS = $(EXTRA) -DSU_TX_MODE=$(SU_TX_MODE) $(RESERVED) -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
            -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \
            -DP0_HW_FLOW=0 -DP1_HW_FLOW=2
@@ -76,7 +79,7 @@ comma := ,
 # one result file per case, so `make -j` runs them in parallel
 define case_rule
 $(BUILD)/res_$(1).txt: $(BUILD)/harness $(BUILD)/fw_$(1).elf
-	@env LOAD=1 $(subst $(comma), ,$(8)) $(BUILD)/harness $(BUILD)/fw_$(1).elf $(2) $(3) $(4) $(5) $(6) $(7) > $$@.tmp 2>&1; mv $$@.tmp $$@
+	@env LOAD=1 TXTIMER=$(if $(filter 3,$(SU_TX_MODE)),3,1) $(subst $(comma), ,$(8)) $(BUILD)/harness $(BUILD)/fw_$(1).elf $(2) $(3) $(4) $(5) $(6) $(7) > $$@.tmp 2>&1; mv $$@.tmp $$@
 endef
 $(foreach c,$(CASES),$(eval $(call case_rule,$(word 1,$(subst :, ,$(c))),$(word 2,$(subst :, ,$(c))),$(word 3,$(subst :, ,$(c))),$(word 4,$(subst :, ,$(c))),$(word 5,$(subst :, ,$(c))),$(word 6,$(subst :, ,$(c))),$(word 7,$(subst :, ,$(c))),$(word 8,$(subst :, ,$(c))))))
 

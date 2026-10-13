@@ -24,6 +24,13 @@ LD_FLAGS     = -Wl,--section-start=.noinit=0x800100 -Wl,-Tdata=0x800300
 # extra compiler flags, e.g. make clean && make EXTRA=-DTX_ENCODE_BATCH=2
 CC_FLAGS    += $(EXTRA)
 
+# soft UART transmitter (see src/config.h): make clean && make SU_TX_MODE=3
+SU_TX_MODE  ?= 0
+CC_FLAGS    += -DSU_TX_MODE=$(SU_TX_MODE)
+ifneq ($(SU_TX_MODE),0)
+CC_FLAGS    += -DSU_REGS_RESERVED $(foreach r,2 3 4 5 6,-ffixed-r$(r))
+endif
+
 # Caterina (Arduino / SparkFun Pro Micro) bootloader
 FLASH_PORT        ?= /dev/ttyACM0
 AVRDUDE_PROGRAMMER = avr109

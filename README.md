@@ -14,16 +14,20 @@ clones), built on [LUFA](https://github.com/abcminiuser/lufa).
 
 Requires `avr-gcc`, `avr-libc` and `avrdude`.
 
+`make clean && make SU_TX_MODE=3` builds the experimental per-bit soft UART
+transmitter (see "Soft UART design"), which moves port 1's TX to pin 5 and
+its DSR to pin 9.
+
 ## Wiring
 
 | Signal       | Port 0 (ttyACM0, USART1) | Port 1 (ttyACM1, soft UART) | Direction |
 |--------------|--------------------------|-----------------------------|-----------|
-| TX           | TX0 (PD3)                | 9 (PB5, OC1A)               | out       |
+| TX           | TX0 (PD3)                | 9 (PB5, OC1A); `SU_TX_MODE=3`: 5 (PC6, OC3A) | out |
 | RX           | RX1 (PD2)                | 4 (PD4, ICP1)               | in        |
 | RTS          | A3 (PF4)                 | A1 (PF6)                    | out       |
 | CTS          | A2 (PF5)                 | A0 (PF7)                    | in        |
 | DTR          | 15 (PB1)                 | 6 (PD7)                     | out       |
-| DSR          | 14 (PB3)                 | 5 (PC6)                     | in        |
+| DSR          | 14 (PB3)                 | 5 (PC6); `SU_TX_MODE=3`: 9 (PB5) | in |
 | DCD          | 16 (PB2)                 | 7 (PE6)                     | in        |
 | RI           | 10 (PB6)                 | 8 (PB4)                     | in        |
 
@@ -91,6 +95,14 @@ Timer1 runs free with a per-baud prescaler.
   including interrupt entry). The USART ISRs re-enable interrupts after 20
   cycles so they can't hold off the timer ISRs. At 115200 a bit is 139 CPU
   cycles, and the worst-case latency chain is 125 cycles.
+* **Per-bit TX (`SU_TX_MODE=3`, experimental):** Timer3 in CTC mode ticks
+  once per bit and its compare ISR shifts the next bit of a 16-bit frame
+  word into OC3A's set/clear mode, so the pin still switches in hardware on
+  the bit grid. The ISR keeps its state in registers reserved with
+  `-ffixed-r2`...`r6` and pushes nothing: 21 cycles per bit, about 250 per
+  8N1 frame including fetching the next word, against about 600 for the
+  edge queue (compare ISR plus encoder). Bit times are whole timer ticks
+  (0.08% slow at 115200), and 1.5 stop bits are sent as 2.
 * **Priority:** when the CPU runs short, RX wins. TX encoding is paused while
   received edges pile up, so TX just leaves idle time between frames (legal
   on a UART line, and the host is held off by USB flow control), while RX
@@ -110,6 +122,9 @@ at the same time.
 | 115200, full duplex loopback, random data        | TX/RX ~68% of line rate          |
 | 115200, full duplex loopback, 0x55 (worst case)  | ~50%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
+
+With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~83%; 0x55
+~61%; RX at 100% plus TX offered: TX ~61-68%.
 
 Measured on a Pro Micro with port 0 looped to port 1 (both directions at
 once, random data, host-side timing):

@@ -1,9 +1,9 @@
 /*
  * Sampling profiler for the real board (debug builds: make EXTRA=-DPROFILER=1).
  *
- * Timer3 interrupts the CPU at pseudo-random intervals and counts where it
- * was in a histogram of 32-byte code buckets. The Timer1 ISRs can't be
- * interrupted, so a sample due while one runs lands after it; how late each
+ * Timer1's compare B interrupts the CPU at pseudo-random intervals and counts where it
+ * was in a histogram of 32-byte code buckets. The soft UART's timer ISRs can't
+ * be interrupted, so a sample due while one runs lands after it; how late each
  * sample was is recorded too, which measures the time spent in them.
  * tools/fwprofile.py collects the results and maps them to functions.
  */

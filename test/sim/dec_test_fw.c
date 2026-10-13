@@ -47,7 +47,7 @@ static uint16_t rnd(void)
 	return rnd_state >> 16;
 }
 
-static uint8_t ring[256];
+static uint8_t ring[256] __attribute__((aligned(256)));
 
 static void fail(uint8_t round, uint8_t cfg)
 {

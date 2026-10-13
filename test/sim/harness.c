@@ -14,7 +14,8 @@
  *   RXGEN=1       drive the soft RX pin from an independent full-rate stream
  *                 instead of looping TX back
  *   PROFILE=file  write a cycles-per-address profile (see profile.py)
- *   QSTAT=qhead,txring  (data addresses of su_q_head and softuart.c's
+ *   QSTAT=qhead,txring  (data addresses of su_q_head (su_txw_head with
+ *                 TXTIMER=3) and softuart.c's
  *                 tx_ring, from avr-nm) sample the soft transmitter's
  *                 state, queue and tx ring every 500 cycles
  *   TRACE=1, DUMP=n, OCDEBUG=n, STATE=1, GAPS=n: debugging aids
@@ -99,9 +100,11 @@ static avr_cycle_count_t loop_cb(struct avr_t* a, avr_cycle_count_t when, void* 
 	return 0;
 }
 
+static int tccra_addr = TCCR1A_ADDR;   /* of the TX timer (TXTIMER=3: Timer3) */
+
 static void oc1a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 {
-	int mode = (avr->data[TCCR1A_ADDR] >> 6) & 3;
+	int mode = (avr->data[tccra_addr] >> 6) & 3;
 	int v    = value & 1;
 	static int dbg = -1;
 	static uint64_t dbg_from;
@@ -226,7 +229,11 @@ int main(int argc, char** argv)
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
 	if (getenv("TRACE"))
 	  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 7), dec_tick, NULL);
-	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('1'), TIMER_IRQ_OUT_COMP + 0),
+	/* TXTIMER=3: soft TX on OC3A (PC6) instead of OC1A (PB5) */
+	int txtimer = getenv("TXTIMER") ? atoi(getenv("TXTIMER")) : 1;
+	if (txtimer == 3)
+	  tccra_addr = 0x90;
+	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ(txtimer == 3 ? '3' : '1'), TIMER_IRQ_OUT_COMP + 0),
 	                        oc1a_changed, NULL);
 	{
 		static const char ports[6] = { 'D', 'D', 'D', 'D', 'D', 'E' };
@@ -343,6 +350,13 @@ int main(int argc, char** argv)
 			uint8_t g0 = avr->data[0x3E], qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
 			int st = (g0 & 1) ? 0 : (g0 & 2) ? 1 : 2;                  /* RUN, DRAIN, IDLE */
 			int q  = (uint8_t)(qh - qt) / 4;
+			if (tccra_addr != TCCR1A_ADDR)
+			{
+				/* Timer3 transmitter: running (found a frame / nothing to
+				 * start last time) or stopped; queue of 2-byte words */
+				st = !(avr->data[0x71] & 2) ? 2 : (g0 & 2) ? 1 : 0;
+				q  = (uint8_t)(qh - qt) / 2;
+			}
 			int qb = q == 0 ? 0 : q < 12 ? 1 : q < 40 ? 2 : 3;
 			int rb = (uint8_t)(avr->data[qs_ring & 0xFFFF] - avr->data[(qs_ring & 0xFFFF) + 1]) != 0;
 			qs_hist[st][qb][rb]++;

@@ -5,13 +5,24 @@
  * Timer1 runs free (normal mode, TOP = 0xFFFF) with a prescaler picked per
  * baud rate so that a whole frame fits in 16 bits.
  *
- * TX: the main loop encodes each byte into the line transitions ("edges")
+ * TX (SU_TX_MODE 0): the main loop encodes each byte into the line transitions ("edges")
  *     it needs (softuart_codec.c) and queues them. Output compare A drives
  *     the OC1A pin in hardware - on a match the pin is set or cleared as
  *     programmed in COM1A - so edges are exact regardless of interrupt
  *     latency. The compare ISR only programs the next one: OCR1A += delta
  *     and the new COM1A mode. Its deadline is that next edge, at least one
  *     bit time away.
+ *
+ * TX (SU_TX_MODE 3): Timer3 runs in CTC mode with a period of one bit, and
+ *     its compare ISR fires once per bit. The main loop turns each byte
+ *     into a 16-bit frame word (start bit in bit 0, then data, parity and
+ *     stop bits) and queues it. The ISR shifts the word out a bit at a
+ *     time, programming OC3A to be set or cleared on the next match, so
+ *     the line switches exactly on the bit grid. Its state lives in
+ *     registers reserved for it (-ffixed-r2..r6): no pushes, 21 cycles per
+ *     bit including interrupt entry, plus ~30 to fetch the next frame word.
+ *     Bit times are whole timer ticks: at most 0.5 tick off per bit (0.08%
+ *     at 115200).
  *
  * RX: input capture timestamps edges on ICP1. The capture ISR stores the
  *     16-bit timestamp and flips the edge polarity; its deadline is also
@@ -57,12 +68,25 @@
 #define CTS_BLOCKED() 0
 #endif
 
+#if SU_TX_MODE != 0 && SU_TX_MODE != 3
+#error SU_TX_MODE must be 0 or 3
+#endif
+#if SU_TX_MODE != 0 && !defined(SU_REGS_RESERVED)
+#error SU_TX_MODE 3 needs r2-r6 reserved for the ISR (-ffixed-r2 ... -ffixed-r6, see the Makefile)
+#endif
+
 #define RX_PORT    PORTD
 #define RX_PIN     PIND
 #define RX_BIT     PD4
+#if SU_TX_MODE == 0
 #define TX_PORT    PORTB
 #define TX_DDR     DDRB
 #define TX_BIT     PB5
+#else
+#define TX_PORT    PORTC
+#define TX_DDR     DDRC
+#define TX_BIT     PC6
+#endif
 
 /* TCCR1A values: OC1A set (line high) / cleared (line low) on match; the
  * codec's queue entries use the same codes */
@@ -81,10 +105,13 @@
 /* how far ahead of "now" a transmission restarting from idle is scheduled */
 #define TX_LEAD    32
 
-/* GPIOR0 bits: transmitter state (neither = idle, compare interrupt off) */
+/* GPIOR0 bits: transmitter state (SU_TX_MODE 0: neither RUN nor DRAIN =
+ * idle, compare interrupt off) */
 #define TXS_RUN    0          /* OCR1A holds the next queued edge */
 #define TXS_DRAIN  1          /* OCR1A holds the end of the last frame's stop bits */
 #define TXS_CTSARM 2          /* FLOW_AUTO: CTS is being obeyed */
+#define TXS_IDLE   1          /* SU_TX_MODE 3: the ISR found nothing to start
+                                 (ring empty or CTS) since the last start bit */
 
 /* Edge ring (RX) and edge queue (TX) are 256-byte aligned rings of 2 and
  * 4 byte entries indexed by a byte offset, so the ISRs index with a single
@@ -95,23 +122,52 @@
 static struct
 {
 	uint8_t e[256];           /* {ICR1L, ICR1H} */
-	uint8_t q[256];           /* {delta lo, delta hi, TCCR1A | CTL_START, unused} */
+	uint8_t q[256];           /* mode 0: {delta lo, delta hi, TCCR1A | CTL_START, unused}
+	                             mode 3: frame words, little endian */
 } bufs __attribute__((aligned(256), section(".noinit")));
 
 volatile uint8_t  su_e_tail;        /* edge ring tail, main loop */
 volatile uint8_t  su_e_overrun;     /* set by the capture ISR when the ring is full */
-volatile uint8_t  su_q_head;        /* edge queue head, main loop */
-volatile uint16_t su_tx_tail_ticks; /* stop bit time left after the last queued frame's last edge */
-
-#define Q_ENTRIES_FREE() ((uint8_t)(255 - (uint8_t)(su_q_head - Q_TAIL)) / 4)
 
 /* ---- main loop state ---- */
 
 static ring_t           tx_ring, rx_ring;
 static volatile uint8_t errors;
 static su_cfg_t         cfg;
-static su_enc_t         enc;
 static su_dec_t         dec;
+
+#if SU_TX_MODE == 0
+volatile uint8_t  su_q_head;        /* edge queue head, main loop */
+volatile uint16_t su_tx_tail_ticks; /* stop bit time left after the last queued frame's last edge */
+static su_enc_t   enc;
+
+#define Q_ENTRIES_FREE() ((uint8_t)(255 - (uint8_t)(su_q_head - Q_TAIL)) / 4)
+#else
+/* Registers reserved for the TX ISR (the Makefile builds everything with
+ * -ffixed for them):
+ *   r3:r2  frame word being sent, next bit in bit 0
+ *   r4     bits of it left to program
+ *   r5     TCCR3A value: COM_CLEAR, with bit 6 set from the frame word
+ *   r6     SREG, saved
+ * The frame word queue is bufs.q, 128 words; the ISR's tail is in GPIOR1. */
+#define TXW_TAIL   GPIOR1
+
+volatile uint8_t su_txw_head;       /* frame word queue head, main loop */
+static uint8_t   su_tx_fbits;       /* bits per frame, start bit included */
+
+/* the ISR's state for an idle line: one more 1 bit, then fetch a word */
+static inline void tx_isr_idle(void)
+{
+	asm volatile(
+		"ldi  r24, 0xFF"    "\n\t"
+		"mov  r2, r24"      "\n\t"
+		"ldi  r24, 1"       "\n\t"
+		"mov  r4, r24"      "\n\t"
+		"ldi  r24, %0"      "\n\t"
+		"mov  r5, r24"      "\n\t"
+		:: "M" (COM_CLEAR) : "r24");
+}
+#endif
 
 /* ------------------------------------------------------------------------ */
 
@@ -163,6 +219,8 @@ ISR(TIMER1_CAPT_vect, ISR_NAKED)
 		[ovr]    "i" (&su_e_overrun)
 	);
 }
+
+#if SU_TX_MODE == 0
 
 ISR(TIMER1_COMPA_vect, ISR_NAKED)
 {
@@ -299,6 +357,71 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 	);
 }
 
+#else /* SU_TX_MODE == 3 */
+
+ISR(TIMER3_COMPA_vect, ISR_NAKED)
+{
+	asm volatile(
+		"in   r6, __SREG__"         "\n\t"
+		"bst  r2, 0"                "\n\t"
+		"bld  r5, 6"                "\n\t"   /* COM_CLEAR or COM_SET */
+		"sts  %[tccr3a], r5"        "\n\t"
+		"lsr  r3"                   "\n\t"
+		"ror  r2"                   "\n\t"
+		"dec  r4"                   "\n\t"
+		"breq 2f"                   "\n\t"
+	"1:"	"out  __SREG__, r6"         "\n\t"
+		"reti"                      "\n\t"
+
+		/* that was the frame's last bit (a stop bit): fetch the next word */
+	"2:"	"push r30"                  "\n\t"
+		"push r31"                  "\n\t"
+		"in   r30, %[tail]"         "\n\t"
+		"lds  r31, %[head]"         "\n\t"
+		"cp   r30, r31"             "\n\t"
+		"breq 4f"                   "\n\t"
+#if P1_HW_FLOW
+		/* only start a frame while CTS is asserted (low) */
+#if P1_HW_FLOW == FLOW_AUTO
+		"sbis %[state], %[ctsarm]"  "\n\t"   /* not armed: CTS doesn't count */
+		"rjmp 5f"                   "\n\t"
+#endif
+		"sbic %[ctspin], %[ctsbit]" "\n\t"
+		"rjmp 4f"                   "\n\t"
+	"5:"
+#endif
+		"ldi  r31, hi8(%[qbuf])"    "\n\t"
+		"ld   r2, Z+"               "\n\t"
+		"ld   r3, Z+"               "\n\t"
+		"out  %[tail], r30"         "\n\t"
+		"lds  r4, %[fbits]"         "\n\t"
+		"cbi  %[state], %[idle]"    "\n\t"
+	"3:"	"pop  r31"                  "\n\t"
+		"pop  r30"                  "\n\t"
+		"rjmp 1b"                   "\n\t"
+
+		/* nothing to start: send one more 1 bit and look again */
+	"4:"	"sbi  %[state], %[idle]"    "\n\t"
+		"ldi  r30, 1"               "\n\t"
+		"mov  r2, r30"              "\n\t"
+		"mov  r4, r30"              "\n\t"
+		"rjmp 3b"                   "\n\t"
+		::
+		[tccr3a]   "n" (_SFR_MEM_ADDR(TCCR3A)),
+		[tail]     "I" (_SFR_IO_ADDR(TXW_TAIL)),
+		[head]     "i" (&su_txw_head),
+		[fbits]    "i" (&su_tx_fbits),
+		[state]    "I" (_SFR_IO_ADDR(GPIOR0)),
+		[idle]     "I" (TXS_IDLE),
+		[ctsarm]   "I" (TXS_CTSARM),
+		[qbuf]     "i" (bufs.q),
+		[ctspin]   "I" (_SFR_IO_ADDR(GPIO_PINREG(P1_CTS_PIN))),
+		[ctsbit]   "I" (GPIO_BIT(P1_CTS_PIN))
+	);
+}
+
+#endif /* SU_TX_MODE */
+
 /* ------------------------------------------------------------------------ */
 
 void su_rx_frame(uint8_t data, uint8_t flags)
@@ -332,10 +455,11 @@ static void rx_task(void)
 		tccr1b = TCCR1B;
 	}
 
+	uint8_t t = su_e_tail;
+
 	/* Nothing new, and the frame in progress (if any) isn't over yet: its
 	 * pending samples can wait for the next edge, only the last one must be
 	 * taken without one (a frame ending in 1s has no closing edge). */
-	uint8_t t = su_e_tail;
 	if (t == head && (!dec.in_frame || (uint16_t)(now - dec.start) <= cfg.last_sample))
 	  goto check_overrun;
 
@@ -376,7 +500,11 @@ check_overrun:
  * falling behind), don't queue more TX frames - fewer frames on the wire
  * also means fewer compare interrupts. */
 #ifndef RX_BACKLOG_MAX
+#if SU_TX_MODE == 3
+#define RX_BACKLOG_MAX  20      /* edges; RX loses data in the simulator from ~36 */
+#else
 #define RX_BACKLOG_MAX  12      /* edges */
+#endif
 #endif
 
 #if PROFILER
@@ -386,6 +514,8 @@ volatile uint16_t su_tx_stats[SU_TX_STATS];
 #else
 #define TX_STAT(i) do { } while (0)
 #endif
+
+#if SU_TX_MODE == 0
 
 static void softuart_tx_start(void)
 {
@@ -448,6 +578,88 @@ static void softuart_set_break(bool on)
 	su_enc_reset(&enc);
 }
 
+#else /* SU_TX_MODE == 3 */
+
+/* The frame word: start bit (0) in bit 0, then the data, parity and stop
+ * bits (ones from there up) */
+static uint16_t tx_word(uint8_t data)
+{
+	data &= cfg.data_mask;
+	uint8_t p = data ^ (data >> 4);
+	p ^= p >> 2;
+	p ^= p >> 1;
+	uint8_t lut = cfg.par_lut;
+	if (p & 1)
+	  lut >>= 1;
+	uint16_t d = data | cfg.enc_or;
+	if (lut & 1)
+	  d |= cfg.enc_par;
+	return d << 1;
+}
+
+static void softuart_tx_start(void)
+{
+	/* checked once per call: a batch adds at most a few frames' worth of
+	 * edges to the backlog, far from filling the edge ring */
+	uint8_t n = ((uint8_t)(E_HEAD - su_e_tail) <= 2 * RX_BACKLOG_MAX) ? TX_ENCODE_BATCH : 0;
+
+	TX_STAT(0);
+	if (!n && !ring_empty(&tx_ring))
+	  TX_STAT(1);
+
+	for (uint8_t i = 0; i < n; i++)
+	{
+		uint8_t h = su_txw_head;
+		if (ring_empty(&tx_ring))            { TX_STAT(3); break; }
+		if ((uint8_t)(h + 2) == TXW_TAIL)    { TX_STAT(4); break; }
+		if (PROFILER && i == n - 1 && ring_count(&tx_ring) > 1)
+		  TX_STAT(2);
+		uint16_t w = tx_word(ring_get(&tx_ring));
+		bufs.q[h]     = w;
+		bufs.q[h + 1] = w >> 8;
+		asm volatile("" ::: "memory");      /* the word before the head */
+		su_txw_head   = h + 2;
+	}
+
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	{
+		if (TIMSK3 & _BV(OCIE3A))
+		{
+			/* Stop once the ISR has found nothing to start (queue empty or
+			 * CTS holding it off): the last stop bit is programmed, and
+			 * the ISR state is "one idle bit, then fetch", so a restart
+			 * adds at least a bit of idle line and never cuts the stop
+			 * bit short. */
+			if ((GPIOR0 & _BV(TXS_IDLE)) && (TXW_TAIL == su_txw_head || CTS_BLOCKED()))
+			  TIMSK3 &= ~_BV(OCIE3A);
+		}
+		else if (TXW_TAIL != su_txw_head && !CTS_BLOCKED())
+		{
+			TX_STAT(5);
+			GPIOR0 &= ~_BV(TXS_IDLE);
+			TIMSK3 |= _BV(OCIE3A);
+		}
+	}
+}
+
+static bool softuart_tx_idle(void)
+{
+	if (TIMSK3 & _BV(OCIE3A))
+	  return false;
+	return (TXW_TAIL == su_txw_head && ring_empty(&tx_ring)) || CTS_BLOCKED();
+}
+
+static void softuart_set_break(bool on)
+{
+	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+	{
+		TCCR3A = on ? COM_CLEAR : COM_SET;
+		TCCR3C = _BV(FOC3A);
+	}
+}
+
+#endif /* SU_TX_MODE */
+
 static void softuart_configure(const CDC_LineEncoding_t* le)
 {
 	uint32_t baud = le->BaudRateBPS;
@@ -466,15 +678,39 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 
 	su_cfg_init(&cfg, F_CPU / prescalers[cs], baud, le->DataBits, le->ParityType, le->CharFormat);
 
+#if SU_TX_MODE == 3
+	/* Timer3: one bit per period, the smallest prescaler that fits */
+	uint8_t cs3 = 0;
+	while (cs3 < 4 && F_CPU / prescalers[cs3] / baud > 65535)
+	  cs3++;
+	uint16_t period = (F_CPU / prescalers[cs3] + baud / 2) / baud;
+	/* 1.5 stop bits are sent as 2 */
+	uint8_t fbits = 1 + cfg.data_bits + (cfg.parity != SU_PARITY_NONE) + (le->CharFormat ? 2 : 1);
+#endif
+
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
 		uint8_t line = (RX_PIN >> RX_BIT) & 1;
 
+#if SU_TX_MODE == 0
 		TIMSK1 &= ~_BV(OCIE1A);
 		GPIOR0 &= ~(_BV(TXS_RUN) | _BV(TXS_DRAIN));   /* keeps TXS_CTSARM */
 		Q_TAIL  = su_q_head;
-		ring_flush(&tx_ring);
 		su_enc_reset(&enc);
+#else
+		TIMSK3 &= ~_BV(OCIE3A);
+		GPIOR0 &= ~_BV(TXS_IDLE);                     /* keeps TXS_CTSARM */
+		TXW_TAIL    = su_txw_head;
+		su_tx_fbits = fbits;
+		tx_isr_idle();
+		TCCR3B = 0;
+		TCNT3  = 0;
+		OCR3A  = period - 1;
+		TCCR3A = COM_SET;
+		TCCR3C = _BV(FOC3A);
+		TCCR3B = _BV(WGM32) | (cs3 + 1);
+#endif
+		ring_flush(&tx_ring);
 
 		/* capture the next edge: falling if the line is high now */
 		TCCR1B = _BV(ICNC1) | (line ? 0 : _BV(ICES1)) | (cs + 1);
@@ -504,8 +740,15 @@ void softuart_init(void)
 	RX_PORT |= _BV(RX_BIT);          /* pull-up on RX */
 
 	GPIOR0 = 0;
+#if SU_TX_MODE == 0
 	TCCR1A = COM_SET;
 	TCCR1C = _BV(FOC1A);             /* OC1A high: line idle */
+#else
+	TCCR1A = 0;
+	tx_isr_idle();
+	TCCR3A = COM_SET;
+	TCCR3C = _BV(FOC3A);             /* OC3A high: line idle */
+#endif
 	TIMSK1 = _BV(ICIE1);
 
 	static const CDC_LineEncoding_t def =

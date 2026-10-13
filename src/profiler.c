@@ -26,7 +26,7 @@ void profiler_sample(uint16_t pc) __attribute__((used));
 /* The stub reads the interrupted PC (a big-endian word address under the
  * four registers it saved) and re-enables interrupts within ~25 cycles, so
  * it holds off the soft UART's timer ISRs no longer than the USART ones. */
-ISR(TIMER3_COMPA_vect, ISR_NAKED)
+ISR(TIMER1_COMPB_vect, ISR_NAKED)
 {
 	asm volatile(
 		"push r24"              "\n\t"
@@ -74,12 +74,12 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 
 void profiler_sample(uint16_t pc)
 {
-	uint16_t now = TCNT3;
-	uint16_t due = OCR3A;
+	uint16_t now = TCNT1;
+	uint16_t due = OCR1B;
 
 	/* next sample in 2048..3071 cycles */
 	lfsr = (lfsr >> 1) ^ (-(lfsr & 1) & 0xB8);
-	OCR3A = due + 2048 + ((uint16_t)lfsr << 2);
+	OCR1B = due + 2048 + ((uint16_t)lfsr << 2);
 
 	if (!sampling)
 	  return;
@@ -98,13 +98,13 @@ void profiler_sample(uint16_t pc)
 	total++;
 }
 
+/* Timer1 runs free at F_CPU at 115200 (the soft UART picks its
+ * prescaler; at lower rates sampling and lateness are in coarser ticks). */
 void profiler_init(void)
 {
-	TCCR3A = 0;
-	TCCR3B = _BV(CS30);           /* F_CPU */
-	OCR3A  = 2048;
-	TIFR3  = _BV(OCF3A);
-	TIMSK3 = _BV(OCIE3A);
+	OCR1B   = TCNT1 + 2048;
+	TIFR1   = _BV(OCF1B);
+	TIMSK1 |= _BV(OCIE1B);
 	sampling = true;
 }
 
