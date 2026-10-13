@@ -76,6 +76,9 @@ Timer1 runs free with a per-baud prescaler.
   the hardware switches the pin exactly on time.
 * **RX:** the capture ISR stores the 16-bit timestamp and flips ICES1. The
   main loop rebuilds the bits by sampling mid-bit between edges.
+* **Decoder:** the per-edge decode loop is asm too (`softuart_dec.S`). It is
+  checked against the C reference version by running both on the simulated
+  AVR with random edge streams.
 * **Interrupt latency:** both ISRs are hand-written asm (55 and 63 cycles).
   The USART ISRs re-enable interrupts after about 20 cycles so they can't
   hold off the timer ISRs. At 115200 a bit is 139 CPU cycles, and the
@@ -95,9 +98,9 @@ at the same time.
 |--------------------------------------------------|----------------------------------|
 | <= 57600, full duplex, continuous                | 100% of line rate both ways      |
 | 115200, RX continuous at 100%                    | lossless                         |
-| 115200, RX at 100% + TX continuous offered       | RX lossless, TX ~50% of line rate|
-| 115200, full duplex loopback, random data        | TX/RX ~55% of line rate          |
-| 115200, full duplex loopback, 0x55 (worst case)  | ~41%                             |
+| 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~55% of line rate|
+| 115200, full duplex loopback, random data        | TX/RX ~58% of line rate          |
+| 115200, full duplex loopback, 0x55 (worst case)  | ~43%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
 
 ## Status

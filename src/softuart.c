@@ -69,6 +69,11 @@
 #error queue control codes do not match TCCR1A
 #endif
 
+/* debugging hook for the simulator: marks decoder runs */
+#ifndef SU_TRACE_DECODE
+#define SU_TRACE_DECODE()
+#endif
+
 /* how far ahead of "now" a transmission restarting from idle is scheduled */
 #define TX_LEAD    32
 
@@ -323,9 +328,11 @@ static void rx_task(void)
 		tccr1b = TCCR1B;
 	}
 
-	/* nothing new, and no sample of a frame in progress is due yet */
+	/* Nothing new, and the frame in progress (if any) isn't over yet: its
+	 * pending samples can wait for the next edge, only the last one must be
+	 * taken without one (a frame ending in 1s has no closing edge). */
 	uint8_t t = su_e_tail;
-	if (t == head && (!dec.in_frame || (uint16_t)(now - dec.start) <= *dec.next))
+	if (t == head && (!dec.in_frame || (uint16_t)(now - dec.start) <= cfg.last_sample))
 	  goto check_overrun;
 
 	/* Captures alternate in polarity, and ICES1 is set up for the one after
@@ -335,6 +342,7 @@ static void rx_task(void)
 	if (!(((uint8_t)(head - t) / 2) & 1))
 	  level ^= 1;
 
+	SU_TRACE_DECODE();
 	su_dec_run(&dec, &cfg, bufs.e, t, head, level, now);
 	su_e_tail = head;
 

@@ -14,7 +14,7 @@ static const uint16_t su_pow2[SU_MAX_BITS + 1] =
 
 static uint8_t parity_bit(const su_cfg_t* c, uint8_t data)
 {
-	uint8_t p = data & (uint8_t)((1 << c->data_bits) - 1);
+	uint8_t p = data & c->data_mask;
 	p ^= p >> 4;
 	p ^= p >> 2;
 	p ^= p >> 1;
@@ -57,6 +57,10 @@ void su_cfg_init(su_cfg_t* c, uint32_t timer_hz, uint32_t baud,
 	}
 
 	c->sample[c->nbits] = 0xFFFF;
+	c->last_sample = c->sample[c->nbits - 1];
+	c->data_mask   = (uint8_t)((1 << data_bits) - 1);
+	c->stop_mask   = (uint16_t)1 << (c->nbits - 1);
+	c->parity_mask = (parity != SU_PARITY_NONE) ? (uint16_t)1 << (c->nbits - 2) : 0;
 
 	/* everything up to the stop bits, then 2, 3 or 4 half bits of stop */
 	uint32_t frame_q8 = HALF_BITS_Q8(2u * (c->nbits - 1) + 2 + stop);
@@ -123,14 +127,8 @@ void su_dec_reset(su_dec_t* d, uint8_t level)
 	d->level    = level;
 }
 
-static void finish_frame(const su_cfg_t* c, uint16_t bits)
+void su_dec_finish_frame(const su_cfg_t* c, uint16_t bits)
 {
-	uint8_t  data  = (uint8_t)(bits >> 1) & (uint8_t)((1 << c->data_bits) - 1);
-	uint8_t  flags = 0;
-
-	if (!(bits >> (c->nbits - 1)))
-	  flags |= SU_RX_FRAMING;
-
 	if (bits == 0)
 	{
 		/* line low for the whole frame, stop bit included */
@@ -138,19 +136,27 @@ static void finish_frame(const su_cfg_t* c, uint16_t bits)
 		return;
 	}
 
-	if (c->parity != SU_PARITY_NONE &&
-	    ((bits >> (1 + c->data_bits)) & 1) != parity_bit(c, data))
+	uint8_t data  = (uint8_t)(bits >> 1) & c->data_mask;
+	uint8_t flags = (bits & c->stop_mask) ? 0 : SU_RX_FRAMING;
+	if (c->parity_mask && !(bits & c->parity_mask) != !parity_bit(c, data))
 	  flags |= SU_RX_PARITY;
 
 	su_rx_frame(data, flags);
 }
 
 /*
- * Decoder inner loop. It runs once per received edge, so it is written to
- * keep its whole state in registers on an 8-bit CPU: per edge it loads the
+ * Decoder inner loop. It runs once per received edge: it loads the
  * timestamp, and only if the next sample point has been passed walks the
  * sample table (ending at its 0xFFFF sentinel) to fill in the bits.
+ *
+ * On the AVR the same algorithm is implemented in softuart_dec.S (the
+ * compiler can't keep this state in registers); this C version is the
+ * reference, used on the host and in the simulator to check the asm one.
  */
+#if !defined(__AVR__) || defined(SU_DEC_C)
+#if defined(__AVR__)
+#define su_dec_run su_dec_run_c     /* SU_DEC_C: C version next to the asm one, for testing */
+#endif
 void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tail,
                 uint8_t head, uint8_t lvl_next, uint16_t now)
 {
@@ -185,7 +191,7 @@ void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tai
 					} while (*next < rel);
 					if (*next == 0xFFFF)
 					{
-						finish_frame(c, bits);
+						su_dec_finish_frame(c, bits);
 						in_frame = 0;
 					}
 				}
@@ -215,3 +221,15 @@ void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tai
 	d->bits     = bits;
 	d->start    = start;
 }
+#undef su_dec_run
+#endif
+
+#if defined(__AVR__)
+/* layout the asm decoder (softuart_dec.S) relies on */
+#include <stddef.h>
+_Static_assert(offsetof(su_dec_t, in_frame) == 0 && offsetof(su_dec_t, level) == 1 &&
+               offsetof(su_dec_t, next) == 2 && offsetof(su_dec_t, mask) == 4 &&
+               offsetof(su_dec_t, bits) == 6 && offsetof(su_dec_t, start) == 8,
+               "su_dec_t layout changed: update softuart_dec.S");
+_Static_assert(offsetof(su_cfg_t, sample) == SU_CFG_SAMPLE_OFS, "update SU_CFG_SAMPLE_OFS");
+#endif

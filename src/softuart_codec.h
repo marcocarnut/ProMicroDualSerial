@@ -18,8 +18,10 @@
 #ifndef SOFTUART_CODEC_H
 #define SOFTUART_CODEC_H
 
+#ifndef __ASSEMBLER__
 #include <stdint.h>
 #include <stdbool.h>
+#endif
 
 /* parity, same numbering as CDC */
 #define SU_PARITY_NONE   0
@@ -59,6 +61,11 @@
 #define SU_CTL_LOW       0x80
 #define SU_CTL_START     0x01
 
+/* offset of su_cfg_t.sample, for the asm decoder */
+#define SU_CFG_SAMPLE_OFS (3 + 2 * SU_MAX_BITS)
+
+#ifndef __ASSEMBLER__
+
 typedef struct
 {
 	uint8_t  data_bits;                  /* 5..8 */
@@ -68,6 +75,10 @@ typedef struct
 	uint16_t sample[SU_MAX_BITS + 1];    /* offset of the middle of each bit, then 0xFFFF */
 	uint16_t frame_len;                  /* offset of the end of the (last) stop bit */
 	uint8_t  frame_frac;                 /* fractional part of the frame length, 1/256 ticks */
+	uint8_t  data_mask;                  /* (1 << data_bits) - 1 */
+	uint16_t parity_mask;                /* parity bit in the sampled bits (0: none) */
+	uint16_t stop_mask;                  /* stop bit in the sampled bits */
+	uint16_t last_sample;                /* sample[nbits - 1] */
 } su_cfg_t;
 
 /* Encoder state carried from frame to frame. */
@@ -122,5 +133,10 @@ void su_dec_reset(su_dec_t* d, uint8_t level);
  */
 void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tail,
                 uint8_t head, uint8_t level, uint16_t now);
+
+/* internal: classifies a completed frame and calls su_rx_frame() */
+void su_dec_finish_frame(const su_cfg_t* c, uint16_t bits);
+
+#endif /* __ASSEMBLER__ */
 
 #endif

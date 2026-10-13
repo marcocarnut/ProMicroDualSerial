@@ -133,6 +133,11 @@ static void uart_xoff_cb(struct avr_irq_t* irq, uint32_t value, void* param) { u
 static void uart_xon_cb(struct avr_irq_t* irq, uint32_t value, void* param) { uart_xoff = 0; }
 
 static uint64_t loop_last, loop_max, loop_max_at, loop_hist[8];
+static void dec_tick(struct avr_irq_t* irq, uint32_t value, void* param)
+{
+	logf_("%10llu  decoder run (TCNT1 ~%u)", (unsigned long long)avr->cycle, 0);
+}
+
 static void loop_tick(struct avr_irq_t* irq, uint32_t value, void* param)
 {
 	if (loop_last && avr->cycle > 300000)
@@ -216,6 +221,8 @@ int main(int argc, char** argv)
 	pd4 = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('D'), 4);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 6), loop_tick, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
+	if (getenv("TRACE"))
+	  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 7), dec_tick, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('1'), TIMER_IRQ_OUT_COMP + 0),
 	                        oc1a_changed, NULL);
 	{
@@ -242,7 +249,7 @@ int main(int argc, char** argv)
 	}
 
 	/* bytes to send */
-	srand(1);
+	srand(getenv("SEED") ? atoi(getenv("SEED")) : 1);
 	for (int i = 0; i < count; i++)
 	{
 		uint8_t b;
@@ -258,7 +265,10 @@ int main(int argc, char** argv)
 	if (rxgen)
 	{
 		/* back-to-back frames from cycle 250000, exact bit times */
-		double bt = F_CPU / baud, t = 250000;
+		/* RXGEN_BAUD: generator rate if different, e.g. 117647 = what the
+		 * ATmega's USART really sends when asked for 115200 */
+		double gbaud = getenv("RXGEN_BAUD") ? atof(getenv("RXGEN_BAUD")) : baud;
+		double bt = F_CPU / gbaud, t = 250000;
 		int    nbits = 1 + bits + (parity != 0);
 		rx_nsent = count;
 		gen_t = malloc(sizeof(uint64_t) * count * 12);
@@ -305,6 +315,19 @@ int main(int argc, char** argv)
 	{
 		uint32_t pc = avr->pc;
 		uint64_t c0 = avr->cycle;
+		/* PC hooks (byte addresses): log decoder runs and decoded frames
+		 * without touching the firmware's timing */
+		static uint32_t pc_dec = 1, pc_rx = 1;
+		if (pc_dec == 1)
+		{
+			pc_dec = getenv("PC_DEC") ? strtoul(getenv("PC_DEC"), 0, 16) : 0;
+			pc_rx  = getenv("PC_RX") ? strtoul(getenv("PC_RX"), 0, 16) : 0;
+		}
+		if (pc_dec && pc == pc_dec)
+		  logf_("%10llu  su_dec_run tail %u head %u lvl %u now %u", (unsigned long long)avr->cycle,
+		        avr->data[18], avr->data[16], avr->data[14], avr->data[12] | (avr->data[13] << 8));
+		if (pc_rx && pc == pc_rx)
+		  logf_("%10llu  su_rx_frame %02x flags %02x", (unsigned long long)avr->cycle, avr->data[24], avr->data[22]);
 		int state = avr_run(avr);
 		static uint64_t prof_to; if (!prof_to) prof_to = getenv("PROFILE_TO") ? strtoull(getenv("PROFILE_TO"), 0, 0) : ~0ULL;
 		if (profiling && c0 >= prof_from && c0 < prof_to && pc / 2 < 16384)
