@@ -24,7 +24,7 @@ MCUFLAGS = $(EXTRA) -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARC
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
            -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \
            -DP0_HW_FLOW=0 -DP1_HW_FLOW=2
-FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S $(SRC)/clock.c
+FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S $(SRC)/softuart_enc.S $(SRC)/clock.c
 
 # name:baud:bits:parity:stop:pattern:count[:env,env...]
 # Data is offered as fast as the firmware accepts it (LOAD=1, with the
@@ -88,9 +88,9 @@ $(BUILD)/dec_harness: dec_harness.c
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -I$(SIMAVR_INC) -o $@ $< $(SIMAVR_LIB) -lm
 
-$(BUILD)/dec_test_fw.elf: dec_test_fw.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S $(SRC)/softuart_codec.h
+$(BUILD)/dec_test_fw.elf: dec_test_fw.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S $(SRC)/softuart_enc.S $(SRC)/softuart_codec.h
 	@mkdir -p $(BUILD)
-	avr-gcc $(MCUFLAGS) -DSU_DEC_C -o $@ dec_test_fw.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S
+	avr-gcc $(MCUFLAGS) -DSU_DEC_C -DSU_ENC_C -o $@ dec_test_fw.c $(SRC)/softuart_codec.c $(SRC)/softuart_dec.S $(SRC)/softuart_enc.S
 
 $(BUILD)/res_decoder_asm_vs_c.txt: $(BUILD)/dec_harness $(BUILD)/dec_test_fw.elf
 	@$(BUILD)/dec_harness $(BUILD)/dec_test_fw.elf > $@.tmp 2>&1; mv $@.tmp $@

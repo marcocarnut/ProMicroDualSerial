@@ -9,9 +9,6 @@
 #pragma GCC optimize ("O2")
 #endif
 
-static const uint16_t su_pow2[SU_MAX_BITS + 1] =
-	{ 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048 };
-
 static uint8_t parity_bit(const su_cfg_t* c, uint8_t data)
 {
 	uint8_t p = data & c->data_mask;
@@ -62,6 +59,11 @@ void su_cfg_init(su_cfg_t* c, uint32_t timer_hz, uint32_t baud,
 	c->stop_mask   = (uint16_t)1 << (c->nbits - 1);
 	c->parity_mask = (parity != SU_PARITY_NONE) ? (uint16_t)1 << (c->nbits - 2) : 0;
 
+	c->enc_or  = (uint16_t)(0xFFFF << (data_bits + (parity != SU_PARITY_NONE)));
+	c->enc_par = (parity != SU_PARITY_NONE) ? (uint16_t)1 << data_bits : 0;
+	static const uint8_t par_lut[] = { 0, 1, 2, 3, 0 };   /* none, odd, even, mark, space */
+	c->par_lut = par_lut[parity];
+
 	/* everything up to the stop bits, then 2, 3 or 4 half bits of stop */
 	uint32_t frame_q8 = HALF_BITS_Q8(2u * (c->nbits - 1) + 2 + stop);
 	c->frame_len  = (uint16_t)(frame_q8 >> 8);
@@ -74,6 +76,15 @@ void su_enc_reset(su_enc_t* e)
 	e->tail = 0;
 	e->frac = 128;   /* round frame starts to the nearest tick */
 }
+
+/* On the AVR, softuart_enc.S has the encoder in asm; this C version is the
+ * reference, used on the host and in the simulator to check the asm one. */
+#if !defined(__AVR__) || defined(SU_ENC_C)
+#if defined(__AVR__)
+#define su_encode su_encode_c       /* SU_ENC_C: C version next to the asm one, for testing */
+#endif
+static const uint16_t su_pow2[SU_MAX_BITS + 1] =
+	{ 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048 };
 
 uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, uint8_t* q, uint8_t h)
 {
@@ -119,6 +130,8 @@ uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, uint8_t* q, uint
 	e->tail = c->frame_len + (frac >> 8) - last;
 	return h;
 }
+#undef su_encode
+#endif
 
 
 void su_dec_reset(su_dec_t* d, uint8_t level)
@@ -231,5 +244,16 @@ _Static_assert(offsetof(su_dec_t, in_frame) == 0 && offsetof(su_dec_t, level) ==
                offsetof(su_dec_t, next) == 2 && offsetof(su_dec_t, mask) == 4 &&
                offsetof(su_dec_t, bits) == 6 && offsetof(su_dec_t, start) == 8,
                "su_dec_t layout changed: update softuart_dec.S");
-_Static_assert(offsetof(su_cfg_t, sample) == SU_CFG_SAMPLE_OFS, "update SU_CFG_SAMPLE_OFS");
+_Static_assert(offsetof(su_cfg_t, parity) == SU_CFG_PARITY_OFS &&
+               offsetof(su_cfg_t, bit_start) == SU_CFG_BIT_START_OFS &&
+               offsetof(su_cfg_t, sample) == SU_CFG_SAMPLE_OFS &&
+               offsetof(su_cfg_t, frame_len) == SU_CFG_FRAME_LEN_OFS &&
+               offsetof(su_cfg_t, frame_frac) == SU_CFG_FRAME_FRAC_OFS &&
+               offsetof(su_cfg_t, data_mask) == SU_CFG_DATA_MASK_OFS &&
+               offsetof(su_cfg_t, enc_or) == SU_CFG_ENC_OR_OFS &&
+               offsetof(su_cfg_t, enc_par) == SU_CFG_ENC_PAR_OFS &&
+               offsetof(su_cfg_t, par_lut) == SU_CFG_PAR_LUT_OFS,
+               "su_cfg_t layout changed: update the SU_CFG_*_OFS offsets");
+_Static_assert(offsetof(su_enc_t, tail) == SU_ENC_TAIL_OFS && offsetof(su_enc_t, frac) == SU_ENC_FRAC_OFS,
+               "su_enc_t layout changed: update the SU_ENC_*_OFS offsets");
 #endif

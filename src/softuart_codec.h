@@ -61,8 +61,20 @@
 #define SU_CTL_LOW       0x80
 #define SU_CTL_START     0x01
 
-/* offset of su_cfg_t.sample, for the asm decoder */
-#define SU_CFG_SAMPLE_OFS (3 + 2 * SU_MAX_BITS)
+/* su_cfg_t field offsets, for the asm encoder and decoder (AVR layout) */
+#define SU_CFG_PARITY_OFS     1
+#define SU_CFG_BIT_START_OFS  3
+#define SU_CFG_SAMPLE_OFS     (SU_CFG_BIT_START_OFS + 2 * SU_MAX_BITS)
+#define SU_CFG_FRAME_LEN_OFS  (SU_CFG_SAMPLE_OFS + 2 * (SU_MAX_BITS + 1))
+#define SU_CFG_FRAME_FRAC_OFS (SU_CFG_FRAME_LEN_OFS + 2)
+#define SU_CFG_DATA_MASK_OFS  (SU_CFG_FRAME_FRAC_OFS + 1)
+#define SU_CFG_ENC_OR_OFS     (SU_CFG_DATA_MASK_OFS + 7)
+#define SU_CFG_ENC_PAR_OFS    (SU_CFG_ENC_OR_OFS + 2)
+#define SU_CFG_PAR_LUT_OFS    (SU_CFG_ENC_PAR_OFS + 2)    /* 63: the last one ldd reaches */
+
+/* su_enc_t field offsets */
+#define SU_ENC_TAIL_OFS       0
+#define SU_ENC_FRAC_OFS       2
 
 #ifndef __ASSEMBLER__
 
@@ -79,6 +91,14 @@ typedef struct
 	uint16_t parity_mask;                /* parity bit in the sampled bits (0: none) */
 	uint16_t stop_mask;                  /* stop bit in the sampled bits */
 	uint16_t last_sample;                /* sample[nbits - 1] */
+
+	/* for the asm encoder, which builds the frame without variable shifts:
+	 * frame bits after the start bit = (data & data_mask) | enc_or, plus
+	 * enc_par when the parity bit is 1 */
+	uint16_t enc_or;                     /* stop bit and up: all ones */
+	uint16_t enc_par;                    /* the parity bit (0: none) */
+	uint8_t  par_lut;                    /* parity bit for data with an even (bit 0)
+	                                        or odd (bit 1) number of ones */
 } su_cfg_t;
 
 /* Encoder state carried from frame to frame. */
@@ -113,6 +133,7 @@ void su_enc_reset(su_enc_t* e);
 
 /* Encodes 'data' into the queue ring 'q' at byte offset 'head' (room for
  * SU_MAX_EDGES entries is the caller's business) and returns the new head.
+ * On the AVR 'q' must be 256-byte aligned.
  * Frame lengths alternate between rounding down and up so that back to back
  * frames keep the exact average rate. */
 uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, uint8_t* q, uint8_t head);

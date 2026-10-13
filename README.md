@@ -77,13 +77,15 @@ Timer1 runs free with a per-baud prescaler.
   the hardware switches the pin exactly on time.
 * **RX:** the capture ISR stores the 16-bit timestamp and flips ICES1. The
   main loop rebuilds the bits by sampling mid-bit between edges.
-* **Decoder:** the per-edge decode loop is asm too (`softuart_dec.S`). It is
-  checked against the C reference version by running both on the simulated
-  AVR with random edge streams.
-* **Interrupt latency:** both ISRs are hand-written asm (55 and 63 cycles).
-  The USART ISRs re-enable interrupts after about 20 cycles so they can't
-  hold off the timer ISRs. At 115200 a bit is 139 CPU cycles, and the
-  worst-case latency chain is about 118 cycles.
+* **Codec:** the encoder (`softuart_enc.S`, ~230 cycles per random 8N1
+  frame) and the per-edge decode loop (`softuart_dec.S`) are asm too. Both
+  are checked against the C reference versions by running them side by side
+  on the simulated AVR: the encoder on every byte in every line coding, the
+  decoder on random edge streams.
+* **Interrupt latency:** both ISRs are hand-written asm (53 and 68 cycles
+  including interrupt entry). The USART ISRs re-enable interrupts after 20
+  cycles so they can't hold off the timer ISRs. At 115200 a bit is 139 CPU
+  cycles, and the worst-case latency chain is 125 cycles.
 * **Priority:** when the CPU runs short, RX wins. TX encoding is paused while
   received edges pile up, so TX just leaves idle time between frames (legal
   on a UART line, and the host is held off by USB flow control), while RX
@@ -99,9 +101,9 @@ at the same time.
 |--------------------------------------------------|----------------------------------|
 | <= 57600, full duplex, continuous                | 100% of line rate both ways      |
 | 115200, RX continuous at 100%                    | lossless                         |
-| 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~55% of line rate|
-| 115200, full duplex loopback, random data        | TX/RX ~58% of line rate          |
-| 115200, full duplex loopback, 0x55 (worst case)  | ~43%                             |
+| 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~58% of line rate|
+| 115200, full duplex loopback, random data        | TX/RX ~68% of line rate          |
+| 115200, full duplex loopback, 0x55 (worst case)  | ~50%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
 
 Measured on a Pro Micro with port 0 looped to port 1 (both directions at
@@ -110,7 +112,7 @@ once, random data, host-side timing):
 | 115200                         | hw -> soft (soft RX) | soft -> hw (soft TX) |
 |--------------------------------|----------------------|----------------------|
 | one direction at a time        | 100%                 | 100%                 |
-| full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 55% / 55% / 54%      |
+| full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 56% / 56% / 55%      |
 | 57600 full duplex              | 100%                 | 100%                 |
 
 ## Status
