@@ -363,21 +363,28 @@ check_overrun:
  * At most TX_ENCODE_BATCH frames are encoded per call: this keeps main loop
  * iterations short so the receive side (which, unlike TX, cannot be held
  * off) is serviced often. When the CPU runs short at high rates, TX then
- * slows down by leaving gaps between frames instead of RX losing data. */
-#define TX_ENCODE_BATCH 2
+ * slows down by leaving gaps between frames instead of RX losing data.
+ * With USB in the main loop an iteration can take longer than two frames at
+ * 115200, so a batch of 2 left the line idle between batches even with
+ * nothing else to do (91% of line rate on hardware; 100% with 4). */
+#ifndef TX_ENCODE_BATCH
+#define TX_ENCODE_BATCH 4
+#endif
 
 /* Receive has priority: while received edges are piling up (the decoder is
  * falling behind), don't queue more TX frames - fewer frames on the wire
  * also means fewer compare interrupts. */
+#ifndef RX_BACKLOG_MAX
 #define RX_BACKLOG_MAX  12      /* edges */
+#endif
 
 static void softuart_tx_start(void)
 {
-	if ((uint8_t)(E_HEAD - su_e_tail) > 2 * RX_BACKLOG_MAX)
-	  goto start;
+	/* checked once per call: a batch adds at most a few frames' worth of
+	 * edges to the backlog, far from filling the edge ring */
+	uint8_t n = ((uint8_t)(E_HEAD - su_e_tail) <= 2 * RX_BACKLOG_MAX) ? TX_ENCODE_BATCH : 0;
 
-	for (uint8_t n = TX_ENCODE_BATCH;
-	     n && !ring_empty(&tx_ring) && Q_ENTRIES_FREE() >= SU_MAX_EDGES; n--)
+	for (; n && !ring_empty(&tx_ring) && Q_ENTRIES_FREE() >= SU_MAX_EDGES; n--)
 	{
 		uint8_t h = su_encode(&cfg, &enc, ring_get(&tx_ring), bufs.q, su_q_head);
 
@@ -389,7 +396,6 @@ static void softuart_tx_start(void)
 		}
 	}
 
-start:
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
 		uint8_t t = Q_TAIL;

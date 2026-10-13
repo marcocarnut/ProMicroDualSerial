@@ -104,6 +104,15 @@ at the same time.
 | 115200, full duplex loopback, 0x55 (worst case)  | ~43%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
 
+Measured on a Pro Micro with port 0 looped to port 1 (both directions at
+once, random data, host-side timing):
+
+| 115200                         | hw -> soft (soft RX) | soft -> hw (soft TX) |
+|--------------------------------|----------------------|----------------------|
+| one direction at a time        | 100%                 | 100%                 |
+| full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 55% / 55% / 54%      |
+| 57600 full duplex              | 100%                 | 100%                 |
+
 ## Status
 
 All four milestones are implemented:

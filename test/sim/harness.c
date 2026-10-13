@@ -403,6 +403,10 @@ int main(int argc, char** argv)
 	for (int i = 0; i < nwant && i < nback; i++)
 	  if (back[i] != want[i]) { if (bad < 5) printf("  rx byte %d: got %02x want %02x\n", i, back[i], want[i]); bad++; }
 	printf("%s: sent %d, got %d, %d mismatches, error pin %d\n", rxgen ? "rx stream" : "loopback", nwant, nback, bad, err_pin);
+	printf("main loop: longest iteration %llu cycles (at %llu); <500 %llu, <1000 %llu, <2000 %llu, <4000 %llu, <8000 %llu, more %llu\n",
+	       (unsigned long long)loop_max, (unsigned long long)loop_max_at,
+	       (unsigned long long)loop_hist[0], (unsigned long long)loop_hist[1], (unsigned long long)loop_hist[2],
+	       (unsigned long long)loop_hist[3], (unsigned long long)loop_hist[4], (unsigned long long)loop_hist[5]);
 
 	/* edges may be off by the encoder's rounding (1 timer tick) and the
 	 * capture of frame starts (1 tick) */

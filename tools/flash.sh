@@ -17,9 +17,12 @@ if [ -e "$PORT" ]; then
 	# open + close with HUPCL drops DTR
 	: < "$PORT" || true
 
-	# wait for the firmware's port to go away
+	# wait for the firmware's ports (both of them) to go away, so the
+	# second one isn't mistaken for the bootloader's
 	i=0
-	while [ -e "$PORT" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+	while { [ -e "$PORT" ] || ls /dev/serial/by-id/*ProMicroDualUART* >/dev/null 2>&1; } && [ $i -lt 30 ]; do
+		sleep 0.1; i=$((i + 1))
+	done
 fi
 
 echo "Waiting for the bootloader port..."

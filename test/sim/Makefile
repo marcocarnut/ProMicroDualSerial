@@ -20,7 +20,7 @@ ROOT     = ../..
 SRC      = $(ROOT)/src
 LUFA     = $(ROOT)/lufa
 BUILD    = build
-MCUFLAGS = -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
+MCUFLAGS = $(EXTRA) -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
            -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \
            -DP0_HW_FLOW=0 -DP1_HW_FLOW=2

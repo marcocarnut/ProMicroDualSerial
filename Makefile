@@ -18,6 +18,9 @@ LUFA_PATH    = lufa/LUFA
 CC_FLAGS     = -DUSE_LUFA_CONFIG_HEADER -IConfig/ -Isrc/ -Wextra -Wno-unused-parameter
 LD_FLAGS     =
 
+# extra compiler flags, e.g. make clean && make EXTRA=-DTX_ENCODE_BATCH=2
+CC_FLAGS    += $(EXTRA)
+
 # Caterina (Arduino / SparkFun Pro Micro) bootloader
 FLASH_PORT        ?= /dev/ttyACM0
 AVRDUDE_PROGRAMMER = avr109
