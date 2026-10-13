@@ -138,6 +138,10 @@ void su_dec_reset(su_dec_t* d, uint8_t level)
 {
 	d->in_frame = 0;
 	d->level    = level;
+	d->next     = 0;
+	d->mask     = 1;
+	d->bits     = 0;
+	d->start    = 0;
 }
 
 void su_dec_finish_frame(const su_cfg_t* c, uint16_t bits)
@@ -180,6 +184,11 @@ void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tai
 	uint16_t        bits     = d->bits;
 	uint16_t        start    = d->start;
 
+	/* edges alternate: the level before the first one is the opposite of
+	 * the one after it */
+	if (tail != head)
+	  lvl = !lvl_next;
+
 	/* every edge, then 'now' as a final pseudo-edge that changes nothing */
 	for (;;)
 	{
@@ -206,6 +215,9 @@ void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tai
 					{
 						su_dec_finish_frame(c, bits);
 						in_frame = 0;
+						next     = c->sample;
+						mask     = 1;
+						bits     = 0;
 					}
 				}
 			}
@@ -215,8 +227,7 @@ void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring, uint8_t tai
 		  break;
 		tail += 2;
 
-		lvl = lvl_next;
-		lvl_next ^= 1;
+		lvl ^= 1;
 		if (!in_frame && !lvl)
 		{
 			in_frame = 1;

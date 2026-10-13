@@ -90,7 +90,9 @@ Timer1 runs free with a per-baud prescaler.
   frame) and the per-edge decode loop (`softuart_dec.S`) are asm too. Both
   are checked against the C reference versions by running them side by side
   on the simulated AVR: the encoder on every byte in every line coding, the
-  decoder on random edge streams.
+  decoder on random edge streams. The decoder is a state machine whose
+  state (idle or in a frame, line high or low) is the code position, so an
+  edge that completes no sample costs ~18 cycles.
 * **Interrupt latency:** both ISRs are hand-written asm (53 and 68 cycles
   including interrupt entry). The USART ISRs re-enable interrupts after 20
   cycles so they can't hold off the timer ISRs. At 115200 a bit is 139 CPU
@@ -123,8 +125,9 @@ at the same time.
 | 115200, full duplex loopback, 0x55 (worst case)  | ~50%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
 
-With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~83%; 0x55
-~61%; RX at 100% plus TX offered: TX ~61-68%.
+With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~95%; 0x55
+~71%; RX at 100% plus TX offered: TX ~75-91%. On the board, full duplex
+8N1 / 8E1 / 7O1: soft TX 75% / 79% / 70%, soft RX 100%.
 
 Measured on a Pro Micro with port 0 looped to port 1 (both directions at
 once, random data, host-side timing):

@@ -1,7 +1,6 @@
 /*
- * Soft UART decoder inner loop for the AVR: su_dec_run() from
- * softuart_codec.c (which has the reference C version and the description)
- * with the whole decoder state held in registers.
+ * Soft UART decoder for the AVR: su_dec_run() from softuart_codec.c (which
+ * has the reference C version and the description) in asm.
  *
  * void su_dec_run(su_dec_t* d, const su_cfg_t* c, const uint8_t* ring,
  *                 uint8_t tail, uint8_t head, uint8_t lvl_next, uint16_t now)
@@ -10,17 +9,21 @@
  *
  * 'ring' must be 256-byte aligned (only its high byte is used).
  *
+ * The decoder is a state machine whose state is the code position: idle or
+ * in a frame, line high or low. Received edges alternate, so each edge
+ * moves to the state of the other level and no level is kept in a register
+ * or tested. Per edge that doesn't complete a sample this is ~18 cycles.
+ *
  * Registers (r2-r7 are left alone: the per-bit transmitter's ISR keeps its
- * state there, see softuart.c):
- *   r9:r8   bits                         r15  lvl (line level)
- *   r11:r10 mask                         r17  in_frame
- *   r14     lvl_next                     r18  tail
- *   r19     ring (high byte)             r21:r20  start
- *   r23:r22 &c->sample[0]                r25:r24  t (edge time / now)
- *   Y       next (pointer into sample[]) r27:r26  rel = t - start
- *   r31:r30 *next                        d: on the stack
- * An edge is being processed when tail != head; when they are equal, the
- * pass is the final one for 'now'.
+ * state there, see softuart.c). Everything that lives across the
+ * su_dec_finish_frame() call is in call-saved registers:
+ *   X        ring + tail                 r9       ring (high byte)
+ *   r11:r10  start                       r8       tail, across the call
+ *   r13:r12  now                         r15:r14  &c->sample[0]
+ *   r16      head                        Y        next (pointer into sample[])
+ *   r21:r20  bits                        r23:r22  mask
+ *   r25:r24  t (edge time)               r19:r18  rel = t - start
+ *   r31:r30  *next                       d: on the stack
  */
 #include "softuart_codec.h"
 
@@ -30,6 +33,63 @@
 #define D_MASK     4
 #define D_BITS     6
 #define D_START    8
+
+/* report the frame in r21:r20 and set up for the next one */
+.macro FINISH
+	mov  r8, r26
+	movw r24, r14
+	sbiw r24, SU_CFG_SAMPLE_OFS
+	movw r22, r20
+	call su_dec_finish_frame
+	mov  r26, r8
+	mov  r27, r9
+	movw r28, r14
+	ldi  r22, 1
+	ldi  r23, 0
+	ldi  r20, 0
+	ldi  r21, 0
+.endm
+
+/* rel = \t - start; branch to \nosample when the next sample point isn't
+ * before it */
+.macro REL_CMP t, nosample
+	movw r18, \t
+	sub  r18, r10
+	sbc  r19, r11
+	ld   r30, Y
+	ldd  r31, Y+1
+	cp   r30, r18
+	cpc  r31, r19
+	brsh \nosample
+.endm
+
+/* take the samples before rel at a high (\high = 1) or low line, ending
+ * with Z = 0 if the frame is complete */
+.macro FILL high
+1:
+.if \high
+	or   r20, r22
+	or   r21, r23
+.endif
+	lsl  r22
+	rol  r23
+	adiw r28, 2
+	ld   r30, Y
+	ldd  r31, Y+1
+	cp   r30, r18
+	cpc  r31, r19
+	brlo 1b
+	adiw r30, 1                 /* the 0xFFFF sentinel: frame complete */
+.endm
+
+/* the next edge into r25:r24, or branch to \none when there is none */
+.macro NEXT_EDGE none
+	cp   r26, r16
+	breq \none
+	ld   r24, X+
+	ld   r25, X+
+	mov  r27, r9                /* undo the carry of X+ at the end of the page */
+.endm
 
 	.section .text.su_dec_run,"ax",@progbits
 	.global su_dec_run
@@ -41,152 +101,155 @@ su_dec_run:
 	push r11
 	push r14
 	push r15
-	push r17
 	push r28
 	push r29
 	push r24                    /* d, for the write back */
 	push r25
 
-	/* load the state */
-	movw r30, r24
-	ld   r17, Z
-	ldd  r15, Z+D_LEVEL
-	ldd  r28, Z+D_NEXT
-	ldd  r29, Z+D_NEXT+1
-	ldd  r10, Z+D_MASK
-	ldd  r11, Z+D_MASK+1
-	ldd  r8,  Z+D_BITS
-	ldd  r9,  Z+D_BITS+1
-	mov  r19, r21
-	ldd  r20, Z+D_START
-	ldd  r21, Z+D_START+1
+	mov  r9, r21
+	mov  r26, r18
+	mov  r27, r21
+	mov  r19, r14
 	subi r22, lo8(-SU_CFG_SAMPLE_OFS)
 	sbci r23, hi8(-SU_CFG_SAMPLE_OFS)
+	movw r14, r22
 
-.Lloop:
-	/* next edge time, or 'now' as a final pseudo-edge */
-	cp   r18, r16
-	breq .Lnow
-	mov  r30, r18
-	mov  r31, r19
-	ld   r24, Z+
-	ld   r25, Z
-	rjmp .Lsample
-.Lnow:
-	movw r24, r12
+	movw r30, r24
+	ld   r18, Z
+	ldd  r0,  Z+D_LEVEL
+	ldd  r28, Z+D_NEXT
+	ldd  r29, Z+D_NEXT+1
+	ldd  r22, Z+D_MASK
+	ldd  r23, Z+D_MASK+1
+	ldd  r20, Z+D_BITS
+	ldd  r21, Z+D_BITS+1
+	ldd  r10, Z+D_START
+	ldd  r11, Z+D_START+1
 
-.Lsample:
-	/* take the samples of the frame in progress that lie before t */
-	tst  r17
-	breq .Ledge
-	movw r26, r24
-	sub  r26, r20
-	sbc  r27, r21
-	ld   r30, Y
-	ldd  r31, Y+1
-	cp   r30, r26
-	cpc  r31, r27
-	brsh .Ledge                 /* next sample point not reached yet */
+	/* with edges to process, the line level before the first one is the
+	 * opposite of lvl_next */
+	cp   r26, r16
+	breq 1f
+	ldi  r24, 1
+	eor  r19, r24
+	mov  r0, r19
+1:
+	tst  r18
+	breq 2f
+	sbrc r0, 0
+	rjmp .LFH
+	rjmp .LFL
+2:	sbrc r0, 0
+	rjmp .LIH
+	rjmp .LIL
 
-	cp   r28, r22               /* sampling the start bit? */
-	cpc  r29, r23
-	brne .Lfill
-	tst  r15
-	breq .Lfill
-	clr  r17                    /* start bit gone by mid-bit: a glitch */
-	rjmp .Ledge
+	/* (in reach of the hot loops' branches) */
+.LFL_now_t:
+	rjmp .LFL_now
+.LFH_now_t:
+	rjmp .LFH_now
+.Lexit_IH_t:
+	rjmp .Lexit_IH
+.Lexit_IL_t:
+	rjmp .Lexit_IL
 
-.Lfill:
-	tst  r15
-	breq .Lfill0
-.Lfill1:                        /* line high: set the bits */
-	or   r8, r10
-	or   r9, r11
-	lsl  r10
-	rol  r11
-	adiw r28, 2
-	ld   r30, Y
-	ldd  r31, Y+1
-	cp   r30, r26
-	cpc  r31, r27
-	brlo .Lfill1
-	rjmp .Lfilled
-.Lfill0:                        /* line low: just move on */
-	lsl  r10
-	rol  r11
-	adiw r28, 2
-	ld   r30, Y
-	ldd  r31, Y+1
-	cp   r30, r26
-	cpc  r31, r27
-	brlo .Lfill0
-.Lfilled:
-	adiw r30, 1                 /* the 0xFFFF sentinel: frame complete */
-	brne .Ledge
+	/* idle, line low (a break, or after a glitch): wait for it to rise */
+.LIL:
+	cp   r26, r16
+	breq .Lexit_IL_t
+	subi r26, -2
+	/* fall through */
 
-	push r18
-	push r19
-	push r20
-	push r21
-	push r22
-	push r23
-	push r24
-	push r25
-	movw r24, r22               /* su_dec_finish_frame(c, bits) */
-	sbiw r24, SU_CFG_SAMPLE_OFS
-	movw r22, r8
-	call su_dec_finish_frame
-	clr  r1                     /* (the C ABI keeps it 0 anyway) */
-	pop  r25
-	pop  r24
-	pop  r23
-	pop  r22
-	pop  r21
-	pop  r20
-	pop  r19
-	pop  r18
-	clr  r17
+	/* idle, line high: the next (falling) edge starts a frame */
+.LIH:
+	cp   r26, r16
+	breq .Lexit_IH_t
+	ld   r10, X+
+	ld   r11, X+
+	mov  r27, r9
+	movw r28, r14
+	ldi  r22, 1
+	ldi  r23, 0
+	ldi  r20, 0
+	ldi  r21, 0
+	/* fall through */
 
-.Ledge:
-	cp   r18, r16
-	breq .Ldone
-	subi r18, -2
-	mov  r15, r14               /* level after this edge */
-	ldi  r26, 1
-	eor  r14, r26
-	tst  r17
-	brne .Lagain
-	tst  r15
-	brne .Lagain
-	/* falling edge on an idle line: a start bit */
-	ldi  r17, 1
-	movw r20, r24
-	movw r28, r22
-	ldi  r26, 1
-	mov  r10, r26
-	clr  r11
-	clr  r8
-	clr  r9
-.Lagain:
-	rjmp .Lloop
+	/* in a frame, line low: samples before the next (rising) edge are 0s */
+.LFL:
+	NEXT_EDGE .LFL_now_t
+	REL_CMP r24, .LFH
+	FILL 0
+	brne .LFH
+	rjmp .LFL_finish
 
-.Ldone:
+	/* in a frame, line high: samples before the next (falling) edge are 1s */
+.LFH:
+	NEXT_EDGE .LFH_now_t
+	REL_CMP r24, .LFL
+	cp   r28, r14               /* the start bit's sample: */
+	cpc  r29, r15
+	breq .LFH_glitch
+	FILL 1
+	brne .LFL
+	movw r10, r24               /* the falling edge starts the next frame */
+	FINISH
+	rjmp .LFL
+.LFH_glitch:                    /* start bit gone by mid-bit: a glitch, and */
+	movw r10, r24               /* the falling edge starts a new frame */
+	rjmp .LFL
+
+.LFL_finish:
+	FINISH                      /* the rising edge leaves the line idle */
+	rjmp .LIH
+
+	/* no more edges: take the samples before 'now' */
+.LFL_now:
+	REL_CMP r12, .Lexit_FL
+	FILL 0
+	brne .Lexit_FL
+	FINISH
+	rjmp .Lexit_IL
+.Lexit_FL:
+	ldi  r18, 1
+	ldi  r19, 0
+	rjmp .Lstore
+
+.LFH_now:
+	REL_CMP r12, .Lexit_FH
+	cp   r28, r14
+	cpc  r29, r15
+	breq .Lexit_IH              /* glitch */
+	FILL 1
+	brne .Lexit_FH
+	FINISH
+	/* fall through */
+.Lexit_IH:
+	ldi  r18, 0
+	ldi  r19, 1
+	rjmp .Lstore
+.Lexit_IL:
+	ldi  r18, 0
+	ldi  r19, 0
+	rjmp .Lstore
+.Lexit_FH:
+	ldi  r18, 1
+	ldi  r19, 1
+.Lstore:
 	pop  r31
 	pop  r30
-	st   Z, r17
-	std  Z+D_LEVEL, r15
+	st   Z, r18
+	std  Z+D_LEVEL, r19
 	std  Z+D_NEXT, r28
 	std  Z+D_NEXT+1, r29
-	std  Z+D_MASK, r10
-	std  Z+D_MASK+1, r11
-	std  Z+D_BITS, r8
-	std  Z+D_BITS+1, r9
-	std  Z+D_START, r20
-	std  Z+D_START+1, r21
+	std  Z+D_MASK, r22
+	std  Z+D_MASK+1, r23
+	std  Z+D_BITS, r20
+	std  Z+D_BITS+1, r21
+	std  Z+D_START, r10
+	std  Z+D_START+1, r11
 
 	pop  r29
 	pop  r28
-	pop  r17
 	pop  r15
 	pop  r14
 	pop  r11

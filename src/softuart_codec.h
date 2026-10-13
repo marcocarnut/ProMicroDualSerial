@@ -144,10 +144,12 @@ void su_dec_reset(su_dec_t* d, uint8_t level);
  * Decodes a batch of line transitions. 'ring' is a 256-byte ring of
  * little-endian 16-bit timestamps indexed by byte offset; the edges from
  * offset 'tail' up to 'head' are processed in order. Transitions alternate,
- * and 'level' is the line level after the first one. 'now' is a time by
- * which every transition up to then is in the batch: samples before it are
- * taken too (this completes a frame whose trailing bits are all 1s).
- * Completed frames are reported through su_rx_frame().
+ * and 'lvl_next' is the line level after the first one (the decoder takes
+ * the level before it to be the opposite, whatever it had). 'now' is a time
+ * by which every transition up to then is in the batch: samples before it
+ * are taken too (this completes a frame whose trailing bits are all 1s).
+ * Completed frames are reported through su_rx_frame(). On the AVR 'ring'
+ * must be 256-byte aligned.
  *
  * Time is 16-bit: this must be called often enough that no more than
  * ~65536 - frame_len ticks pass between calls while a frame is in progress.
