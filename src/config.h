@@ -33,7 +33,7 @@
  *     each byte into a list of line transitions.
  *  3  one interrupt per bit on Timer3 / OC3A in CTC mode: TX on PC6
  *     (pin 5), and port 1's DSR moves to PB5 (pin 9). Much cheaper per
- *     frame; needs r2-r6 reserved for its ISR (the Makefiles pass the
+ *     frame; needs r2-r7 reserved for its ISR (the Makefiles pass the
  *     -ffixed-rN flags for it). */
 #ifndef SU_TX_MODE
 #define SU_TX_MODE 0

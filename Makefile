@@ -28,7 +28,7 @@ CC_FLAGS    += $(EXTRA)
 SU_TX_MODE  ?= 0
 CC_FLAGS    += -DSU_TX_MODE=$(SU_TX_MODE)
 ifneq ($(SU_TX_MODE),0)
-CC_FLAGS    += -DSU_REGS_RESERVED $(foreach r,2 3 4 5 6,-ffixed-r$(r))
+CC_FLAGS    += -DSU_REGS_RESERVED $(foreach r,2 3 4 5 6 7,-ffixed-r$(r))
 endif
 
 # Caterina (Arduino / SparkFun Pro Micro) bootloader

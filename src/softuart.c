@@ -19,7 +19,7 @@
  *     stop bits) and queues it. The ISR shifts the word out a bit at a
  *     time, programming OC3A to be set or cleared on the next match, so
  *     the line switches exactly on the bit grid. Its state lives in
- *     registers reserved for it (-ffixed-r2..r6): no pushes, 21 cycles per
+ *     registers reserved for it (-ffixed-r2..r7): no pushes, 21 cycles per
  *     bit including interrupt entry, plus ~30 to fetch the next frame word.
  *     Bit times are whole timer ticks: at most 0.5 tick off per bit (0.08%
  *     at 115200).
@@ -72,7 +72,7 @@
 #error SU_TX_MODE must be 0 or 3
 #endif
 #if SU_TX_MODE != 0 && !defined(SU_REGS_RESERVED)
-#error SU_TX_MODE 3 needs r2-r6 reserved for the ISR (-ffixed-r2 ... -ffixed-r6, see the Makefile)
+#error SU_TX_MODE 3 needs r2-r7 reserved for the ISRs (-ffixed-r2 ... -ffixed-r7, see the Makefile)
 #endif
 
 #define RX_PORT    PORTD
@@ -148,7 +148,8 @@ static su_enc_t   enc;
  *   r3:r2  frame word being sent, next bit in bit 0
  *   r4     bits of it left to program
  *   r5     TCCR3A value: COM_CLEAR, with bit 6 set from the frame word
- *   r6     SREG, saved
+ *   r6     SREG, saved (also by the capture ISR)
+ *   r7     the capture ISR's data register
  * The frame word queue is bufs.q, 128 words; the ISR's tail is in GPIOR1. */
 #define TXW_TAIL   GPIOR1
 
@@ -171,6 +172,7 @@ static inline void tx_isr_idle(void)
 
 /* ------------------------------------------------------------------------ */
 
+#if SU_TX_MODE == 0
 ISR(TIMER1_CAPT_vect, ISR_NAKED)
 {
 	asm volatile(
@@ -219,6 +221,58 @@ ISR(TIMER1_CAPT_vect, ISR_NAKED)
 		[ovr]    "i" (&su_e_overrun)
 	);
 }
+
+#else
+
+/* The same with the registers reserved for the ISRs (see the TX ISR
+ * below): SREG goes to r6, which the TX ISR also uses as scratch (neither
+ * ISR can interrupt the other), and r7 is the data register. 45 cycles in
+ * total instead of 53. */
+ISR(TIMER1_CAPT_vect, ISR_NAKED)
+{
+	asm volatile(
+		"in   r6, __SREG__"         "\n\t"
+		"push r30"                  "\n\t"
+		"push r31"                  "\n\t"
+		/* wait for the opposite edge next; changing ICES1 can set ICF1 */
+		"lds  r7, %[tccr1b]"        "\n\t"
+		"ldi  r30, %[ices]"         "\n\t"
+		"eor  r30, r7"              "\n\t"
+		"sts  %[tccr1b], r30"       "\n\t"
+		"ldi  r30, %[icf]"          "\n\t"
+		"out  %[tifr1], r30"        "\n\t"
+		/* store the timestamp at the head */
+		"in   r30, %[head]"         "\n\t"
+		"ldi  r31, hi8(%[ebuf])"    "\n\t"
+		"lds  r7, %[icr1l]"         "\n\t"
+		"st   Z+, r7"               "\n\t"
+		"lds  r7, %[icr1h]"         "\n\t"
+		"st   Z+, r7"               "\n\t"
+		/* publish it, unless that would make head == tail */
+		"lds  r7, %[tail]"          "\n\t"
+		"cpse r30, r7"              "\n\t"
+		"rjmp 1f"                   "\n\t"
+		"sts  %[ovr], r31"          "\n\t"   /* r31 is never 0 */
+		"rjmp 2f"                   "\n\t"
+	"1:"	"out  %[head], r30"         "\n\t"
+	"2:"	"pop  r31"                  "\n\t"
+		"pop  r30"                  "\n\t"
+		"out  __SREG__, r6"         "\n\t"
+		"reti"                      "\n\t"
+		::
+		[tccr1b] "n" (_SFR_MEM_ADDR(TCCR1B)),
+		[icr1l]  "n" (_SFR_MEM_ADDR(ICR1L)),
+		[icr1h]  "n" (_SFR_MEM_ADDR(ICR1H)),
+		[tifr1]  "I" (_SFR_IO_ADDR(TIFR1)),
+		[head]   "I" (_SFR_IO_ADDR(E_HEAD)),
+		[ices]   "M" (_BV(ICES1)),
+		[icf]    "M" (_BV(ICF1)),
+		[ebuf]   "i" (bufs.e),
+		[tail]   "i" (&su_e_tail),
+		[ovr]    "i" (&su_e_overrun)
+	);
+}
+#endif
 
 #if SU_TX_MODE == 0
 

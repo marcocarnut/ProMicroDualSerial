@@ -22,7 +22,7 @@ LUFA     = $(ROOT)/lufa
 BUILD    = build$(if $(filter-out 0,$(SU_TX_MODE)),_tx$(SU_TX_MODE))
 # SU_TX_MODE=3 tests the per-bit Timer3 transmitter (see src/config.h)
 SU_TX_MODE ?= 0
-RESERVED = $(if $(filter-out 0,$(SU_TX_MODE)),-DSU_REGS_RESERVED $(foreach r,2 3 4 5 6,-ffixed-r$(r)))
+RESERVED = $(if $(filter-out 0,$(SU_TX_MODE)),-DSU_REGS_RESERVED $(foreach r,2 3 4 5 6 7,-ffixed-r$(r)))
 MCUFLAGS = $(EXTRA) -DSU_TX_MODE=$(SU_TX_MODE) $(RESERVED) -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
            -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \

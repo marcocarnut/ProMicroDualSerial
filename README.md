@@ -101,7 +101,7 @@ Timer1 runs free with a per-baud prescaler.
   once per bit and its compare ISR shifts the next bit of a 16-bit frame
   word into OC3A's set/clear mode, so the pin still switches in hardware on
   the bit grid. The ISR keeps its state in registers reserved with
-  `-ffixed-r2`...`r6` and pushes nothing: 21 cycles per bit, about 250 per
+  `-ffixed-r2`...`r7` and pushes nothing: 21 cycles per bit, about 250 per
   8N1 frame including fetching the next word, against about 600 for the
   edge queue (compare ISR plus encoder). Bit times are whole timer ticks
   (0.08% slow at 115200), and 1.5 stop bits are sent as 2.
@@ -125,9 +125,9 @@ at the same time.
 | 115200, full duplex loopback, 0x55 (worst case)  | ~50%                             |
 | 230400, RX continuous                            | beyond the CPU: bursts only      |
 
-With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~95%; 0x55
-~71%; RX at 100% plus TX offered: TX ~75-91%. On the board, full duplex
-8N1 / 8E1 / 7O1: soft TX 75% / 79% / 70%, soft RX 100%.
+With `SU_TX_MODE=3` (sim): full duplex loopback, random data ~98%; 0x55
+~74%; RX at 100% plus TX offered: TX ~81-99%. On the board, full duplex
+8N1 / 8E1 / 7O1: soft TX 81% / 87% / 76%, soft RX 100%.
 
 Measured on a Pro Micro with port 0 looped to port 1 (both directions at
 once, random data, host-side timing):
