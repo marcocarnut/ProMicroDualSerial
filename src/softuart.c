@@ -45,8 +45,10 @@
 #include "config.h"
 #include "gpio.h"
 
-#if P1_HW_FLOW
+#if P1_HW_FLOW == FLOW_ON
 #define CTS_BLOCKED() GPIO_READ(P1_CTS_PIN)    /* deasserted = high */
+#elif P1_HW_FLOW == FLOW_AUTO
+#define CTS_BLOCKED() ((GPIOR0 & _BV(TXS_CTSARM)) && GPIO_READ(P1_CTS_PIN))
 #else
 #define CTS_BLOCKED() 0
 #endif
@@ -73,6 +75,7 @@
 /* GPIOR0 bits: transmitter state (neither = idle, compare interrupt off) */
 #define TXS_RUN    0          /* OCR1A holds the next queued edge */
 #define TXS_DRAIN  1          /* OCR1A holds the end of the last frame's stop bits */
+#define TXS_CTSARM 2          /* FLOW_AUTO: CTS is being obeyed */
 
 /* Edge ring (RX) and edge queue (TX) are 256-byte aligned rings of 2 and
  * 4 byte entries indexed by a byte offset, so the ISRs index with a single
@@ -175,6 +178,10 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 		"ldd  r25, Z+2"             "\n\t"
 		"sbrs r25, 0"               "\n\t"   /* CTL_START */
 		"rjmp 5f"                   "\n\t"
+#if P1_HW_FLOW == FLOW_AUTO
+		"sbis %[state], %[ctsarm]"  "\n\t"   /* not armed: CTS doesn't count */
+		"rjmp 5f"                   "\n\t"
+#endif
 		"sbic %[ctspin], %[ctsbit]" "\n\t"
 		"rjmp 6f"                   "\n\t"
 	"5:"
@@ -230,8 +237,13 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 	"3:"	"cp   r30, r24"             "\n\t"
 		"breq 4f"                   "\n\t"
 #if P1_HW_FLOW
+#if P1_HW_FLOW == FLOW_AUTO
+		"sbis %[state], %[ctsarm]"  "\n\t"
+		"rjmp 8f"                   "\n\t"
+#endif
 		"sbic %[ctspin], %[ctsbit]" "\n\t"
 		"rjmp 4f"                   "\n\t"
+	"8:"
 #endif
 		/* a frame was queued meanwhile: start it now (skipping its
 		 * start edge's delta, which assumed back to back frames) */
@@ -264,6 +276,7 @@ ISR(TIMER1_COMPA_vect, ISR_NAKED)
 		[state]   "I" (_SFR_IO_ADDR(GPIOR0)),
 		[run]     "I" (TXS_RUN),
 		[drain]   "I" (TXS_DRAIN),
+		[ctsarm]  "I" (TXS_CTSARM),
 		[commask] "M" (~CTL_START & 0xFF),
 		[comset]  "M" (COM_SET),
 		[comclr]  "M" (COM_CLEAR),
@@ -422,7 +435,7 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 		uint8_t line = (RX_PIN >> RX_BIT) & 1;
 
 		TIMSK1 &= ~_BV(OCIE1A);
-		GPIOR0 &= ~(_BV(TXS_RUN) | _BV(TXS_DRAIN));
+		GPIOR0 &= ~(_BV(TXS_RUN) | _BV(TXS_DRAIN));   /* keeps TXS_CTSARM */
 		Q_TAIL  = su_q_head;
 		ring_flush(&tx_ring);
 		su_enc_reset(&enc);
@@ -438,6 +451,14 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 static void softuart_task(void)
 {
 	rx_task();
+}
+
+static void softuart_cts_arm(bool on)
+{
+	if (on)
+	  GPIOR0 |= _BV(TXS_CTSARM);     /* sbi/cbi: atomic */
+	else
+	  GPIOR0 &= ~_BV(TXS_CTSARM);
 }
 
 void softuart_init(void)
@@ -467,4 +488,5 @@ const uart_port_t softuart_port =
 	.tx_start  = softuart_tx_start,
 	.tx_idle   = softuart_tx_idle,
 	.set_break = softuart_set_break,
+	.cts_arm   = softuart_cts_arm,
 };

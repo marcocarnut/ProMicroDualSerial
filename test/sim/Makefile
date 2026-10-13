@@ -19,7 +19,7 @@ BUILD    = build
 MCUFLAGS = -mmcu=atmega32u4 -DF_CPU=16000000UL -DF_USB=16000000UL -DARCH=ARCH_AVR8 \
            -DUSE_LUFA_CONFIG_HEADER -I$(ROOT)/Config -I$(SRC) -I$(LUFA) -Os -std=gnu99 \
            -ffunction-sections -fdata-sections -Wl,--gc-sections -Wall \
-           -DP0_HW_FLOW=0 -DP1_HW_FLOW=1
+           -DP0_HW_FLOW=0 -DP1_HW_FLOW=2
 FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(SRC)/clock.c
 
 # name:baud:bits:parity:stop:pattern:count[:env]
@@ -43,7 +43,8 @@ CASES = \
 	rxgen_115200_8N1_55:115200:8:0:0:55:3000:RXGEN=1 \
 	rxgen_57600_7E1_ascii:57600:7:2:0:ascii:2000:RXGEN=1 \
 	cts_115200_8N1_random:115200:8:0:0:random:2000:CTS_TOGGLE=1 \
-	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1
+	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1 \
+	cts_unconnected_115200:115200:8:0:0:random:1000:CTS_NEVER=1
 
 all: run
 

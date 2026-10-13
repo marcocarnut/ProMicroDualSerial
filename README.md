@@ -31,11 +31,24 @@ All levels are 5 V TTL. The handshake lines are active low, like on an FTDI
 adapter. Inputs have pull-ups, so unconnected inputs read as deasserted. Pins
 and options are in `src/config.h`.
 
-**Flow control is on by default (`P0_HW_FLOW`, `P1_HW_FLOW`).** A port only
-transmits while its CTS is low, so tie CTS to GND if you don't use it.
-RTS is asserted while the host has the port open (host RTS set) and the
-receive buffer has room. With flow control off, RTS just follows the host.
-Breaks can be sent even while CTS holds off data.
+**Flow control** (`P0_HW_FLOW`, `P1_HW_FLOW` in `src/config.h`). CDC-ACM
+has no way for the host to switch it at run time: minicom's "hardware flow
+control" setting never reaches the device. So it's chosen at build time:
+
+* `FLOW_AUTO` (default): CTS is obeyed once it has been seen asserted (low)
+  since the host opened the port (raised DTR). An unconnected CTS never arms
+  it, and a real peer arms it straight away. The catch: a peer that starts
+  out with CTS deasserted is sent to until it first asserts CTS.
+* `FLOW_ON`: the port only transmits while CTS is low, so an unconnected CTS
+  blocks it.
+* `FLOW_OFF`: CTS is ignored.
+
+With `FLOW_AUTO` or `FLOW_ON`, RTS is asserted while the host has RTS set
+(Linux does that while the port is open) and the receive buffer has room.
+With `FLOW_OFF`, RTS just follows the host. CTS is checked before each
+frame, so at most the frame already committed (plus one in the USART on
+port 0) goes out after CTS drops. Breaks still go through while CTS holds
+off data.
 
 The RX and TX LEDs blink on UART activity.
 
@@ -97,7 +110,8 @@ All four milestones are implemented:
    ways, framing/parity/overrun/break reported to the host.
 3. Port 1 on the timer soft UART: the same line codings, 50 to 230400 baud
    with exact bit timing.
-4. RTS/CTS flow control on both ports, plus DTR out and DSR/DCD/RI in.
+4. RTS/CTS flow control on both ports (auto, on or off), plus DTR out and
+   DSR/DCD/RI in.
 
 Also included: a 1200-baud touch to enter the Caterina bootloader
 (`BOOTLOADER_1200BAUD_TOUCH`) and activity LEDs.

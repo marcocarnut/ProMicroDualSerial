@@ -40,6 +40,9 @@ typedef struct
 	/* Hold the TX line in the spacing (low) state. Only called when
 	 * tx_idle() is true. */
 	void (*set_break)(bool on);
+
+	/* FLOW_AUTO: start or stop obeying CTS. */
+	void (*cts_arm)(bool on);
 } uart_port_t;
 
 #endif

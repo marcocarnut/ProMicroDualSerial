@@ -10,7 +10,7 @@
  *  - Break: TX line held low via the port pin with the USART transmitter off;
  *    received breaks (framing error with all-zero data) are reported as
  *    breaks, not as a 0x00 byte.
- *  - CTS flow control (P0_HW_FLOW): checked before each byte is handed to
+ *  - CTS flow control (P0_HW_FLOW, see config.h): checked before each byte is handed to
  *    the USART, so at most the byte in progress and one in UDR1 go out
  *    after CTS is deasserted.
  *
@@ -24,8 +24,12 @@
 #include "config.h"
 #include "gpio.h"
 
-#if P0_HW_FLOW
+static volatile uint8_t cts_armed;
+
+#if P0_HW_FLOW == FLOW_ON
 #define CTS_BLOCKED() GPIO_READ(P0_CTS_PIN)    /* deasserted = high */
+#elif P0_HW_FLOW == FLOW_AUTO
+#define CTS_BLOCKED() (cts_armed && GPIO_READ(P0_CTS_PIN))
 #else
 #define CTS_BLOCKED() 0
 #endif
@@ -297,6 +301,11 @@ static void hwuart_set_break(bool on)
 	}
 }
 
+static void hwuart_cts_arm(bool on)
+{
+	cts_armed = on;
+}
+
 void hwuart_init(void)
 {
 	DDRD  |= _BV(PD3);            /* TX, idle high */
@@ -318,4 +327,5 @@ const uart_port_t hwuart_port =
 	.tx_start  = hwuart_tx_start,
 	.tx_idle   = hwuart_tx_idle,
 	.set_break = hwuart_set_break,
+	.cts_arm   = hwuart_cts_arm,
 };

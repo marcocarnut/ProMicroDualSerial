@@ -177,6 +177,9 @@ static void set_cts(int on)
 	avr_raise_irq(cts_irq, !on);
 }
 
+static uint64_t starts[100000];   /* TX frame start times, from the waveform check */
+static int      nstarts;
+
 static int fw_ready = 1;
 static void ready_cb(struct avr_irq_t* irq, uint32_t value, void* param) { fw_ready = value & 1; }
 
@@ -311,7 +314,7 @@ int main(int argc, char** argv)
 		/* assert CTS once the firmware has set up its pull-up (an earlier
 		 * external drive would be overridden by it in simavr) */
 		static int cts_init;
-		if (!cts_init && avr->cycle >= 150000)
+		if (!cts_init && avr->cycle >= 150000 && !getenv("CTS_NEVER"))
 		{
 			cts_init = 1;
 			set_cts(1);
@@ -378,36 +381,6 @@ int main(int argc, char** argv)
 	  if (back[i] != want[i]) { if (bad < 5) printf("  rx byte %d: got %02x want %02x\n", i, back[i], want[i]); bad++; }
 	printf("%s: sent %d, got %d, %d mismatches, error pin %d\n", rxgen ? "rx stream" : "loopback", nwant, nback, bad, err_pin);
 
-	/* CTS: a start bit may only appear while CTS is asserted, or within one
-	 * frame (+ ISR latency) of its deassertion - the frame the transmitter
-	 * had already committed to when CTS went away */
-	int cts_bad = 0;
-	if (cts_toggle)
-	{
-		double fl = (nb + 1 + 0.5 * stop) * (F_CPU / baud) + 300;
-		int c = 0, prev_lvl = 1;
-		for (int j = 0; j < nedges; j++)
-		{
-			if (edge_v[j] != 0 || (j && edge_v[j - 1] == 0)) continue;
-			/* is this falling edge a start bit? (preceded by >= 1 bit of high) */
-			if (j && edge_t[j] - edge_t[j - 1] < F_CPU / baud * 0.9 && prev_lvl) { }
-			while (c + 1 < ncts && cts_t[c + 1] <= edge_t[j]) c++;
-			if (ncts && cts_t[c] <= edge_t[j] && !cts_v[c] && edge_t[j] > cts_t[c] + fl)
-			{
-				/* only start bits count: a falling edge within a frame is fine
-				 * if its frame started in time - approximate by requiring the
-				 * line to have been high for at least the stop bit */
-				if (j == 0 || edge_t[j] - edge_t[j - 1] >= (F_CPU / baud) * (1 + 0.5 * stop) - 10)
-				{
-					if (cts_bad < 3) printf("  start bit at %llu while CTS deasserted since %llu\n",
-					                       (unsigned long long)edge_t[j], (unsigned long long)cts_t[c]);
-					cts_bad++;
-				}
-			}
-		}
-		printf("cts: %d toggles, %d violations\n", ncts, cts_bad);
-	}
-
 	/* edges may be off by the encoder's rounding (1 timer tick) and the
 	 * capture of frame starts (1 tick) */
 	static const int presc[] = { 1, 8, 64, 256, 1024 };
@@ -426,6 +399,7 @@ int main(int argc, char** argv)
 	{
 		/* edge e is a start bit */
 		double s = (double)edge_t[e];
+		if (nstarts < 100000) starts[nstarts++] = edge_t[e];
 		int fb[12], k = 0;
 		fb[k++] = 0;
 		uint8_t v = sent[ndec];
@@ -487,6 +461,27 @@ int main(int argc, char** argv)
 		}
 		printf("gaps: %d short idle gaps between back-to-back frames, %.0f cycles total (%.2f frames)\n", ngaps, lost, lost / fl);
 	}
+	/* CTS: a frame may only start while CTS is asserted, or within one
+	 * frame (+ ISR latency) of its deassertion - the frame the transmitter
+	 * had already committed to when CTS went away */
+	int cts_bad = 0;
+	if (cts_toggle)
+	{
+		double fl = (nb + 1 + 0.5 * stop) * (F_CPU / baud) + 300;
+		int c = 0;
+		for (int j = 0; j < nstarts; j++)
+		{
+			while (c + 1 < ncts && cts_t[c + 1] <= starts[j]) c++;
+			if (ncts && cts_t[c] <= starts[j] && !cts_v[c] && starts[j] > cts_t[c] + fl)
+			{
+				if (cts_bad < 3) printf("  frame start at %llu while CTS deasserted since %llu\n",
+				                       (unsigned long long)starts[j], (unsigned long long)cts_t[c]);
+				cts_bad++;
+			}
+		}
+		printf("cts: %d toggles, %d violations\n", ncts, cts_bad);
+	}
+
 	printf("waveform: %d frames, %d bad, worst edge deviation %.1f cycles (%.1f%% of a bit)\n",
 	       ndec, dbad, worst, 100 * worst / bitc);
 

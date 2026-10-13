@@ -48,6 +48,7 @@ typedef struct
 	uint16_t            serial_state;
 	uint16_t            serial_state_sent;
 	bool                rx_full;           /* RTS held off for lack of buffer space */
+	bool                cts_armed;         /* FLOW_AUTO: CTS seen asserted since open */
 	bool                ri_last;
 } bridge_t;
 
@@ -127,6 +128,16 @@ static void leds_task(uint32_t now)
 		uint16_t  host = cdc[n].State.ControlLineStates.HostToDevice;          \
 		bool      rts  = host & CDC_CONTROL_LINE_OUT_RTS;                      \
 		                                                                       \
+		if (P##n##_HW_FLOW == FLOW_AUTO)                                       \
+		{                                                                      \
+			/* obey CTS once seen asserted while the port is open */           \
+			bool open = host & CDC_CONTROL_LINE_OUT_DTR;                       \
+			if (!open)                                                         \
+			  b->cts_armed = false;                                            \
+			else if (!b->cts_armed && GPIO_ASSERTED(P##n##_CTS_PIN))           \
+			  b->cts_armed = true;                                             \
+			b->uart->cts_arm(b->cts_armed);                                    \
+		}                                                                      \
 		if (P##n##_HW_FLOW)                                                    \
 		{                                                                      \
 			uint8_t room = ring_free(b->uart->rx);                             \

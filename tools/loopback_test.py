@@ -24,8 +24,9 @@ checks the received bytes and the line error counters (TIOCGICOUNT), then
 sends a break each way and checks it is reported as a break. It then checks
 RTS/CTS flow control (dropping RTS on one port must stop the other port's
 transmitter) and, with --modem, that DTR shows up as DSR and DCD on the
-other side. Use --no-flow for firmware built with P0/P1_HW_FLOW = 0 (or
-without the RTS/CTS wires, with A2 and A0 tied to GND).
+other side. Use --no-flow when the RTS/CTS wires are not fitted (with the
+default FLOW_AUTO the data tests then still pass, CTS never gets armed) or
+for firmware built with FLOW_OFF.
 """
 import array
 import fcntl

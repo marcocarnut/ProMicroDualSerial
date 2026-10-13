@@ -6,8 +6,9 @@
  * soft UART's encoder, compare ISR, capture ISR and decoder.
  *
  * Error flags are latched on port D/E pins for the harness to see. The soft
- * UART is built with CTS flow control (P1_HW_FLOW, CTS on PF7) so the
- * harness can exercise it; it holds CTS asserted unless testing it.
+ * UART is built with automatic CTS flow control (P1_HW_FLOW = FLOW_AUTO,
+ * CTS on PF7): the harness asserts CTS after boot, which arms it, and
+ * toggles it in the CTS cases (or never asserts it, with CTS_NEVER).
  */
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -74,6 +75,10 @@ int main(void)
 		  PORTB |= _BV(PB4);
 		else
 		  PORTB &= ~_BV(PB4);
+
+		/* FLOW_AUTO arming as the bridge does it (the port counts as open) */
+		if (!(PINF & _BV(PF7)))
+		  softuart_port.cts_arm(true);
 
 		uint8_t serr, herr;
 		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)

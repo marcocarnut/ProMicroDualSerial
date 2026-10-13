@@ -55,19 +55,31 @@
 #define P1_DCD_PIN   E,6
 #define P1_RI_PIN    B,4
 
-/* Hardware (RTS/CTS) flow control, per port.
- *  - CTS: the transmitter only starts a frame while CTS is asserted (low).
- *    An unconnected CTS reads as deasserted, so with this enabled nothing is
- *    sent until CTS is pulled low - tie it to GND if unused, or set 0 here.
- *  - RTS: asserted while the host has RTS asserted (Linux does that while
- *    the port is open) and the receive buffer has room.
- * With it disabled, CTS is ignored and RTS simply follows the host's RTS.
- * (CDC-ACM has no standard request to switch this at run time.) */
+/* Hardware (RTS/CTS) flow control, per port. CDC-ACM has no request to
+ * switch it at run time (the host's CRTSCTS setting never reaches the
+ * device), so it is chosen here:
+ *
+ *  FLOW_OFF  CTS is ignored; RTS follows the host's RTS.
+ *  FLOW_ON   The transmitter only starts a frame while CTS is asserted
+ *            (low). An unconnected CTS reads as deasserted (pull-up), so
+ *            nothing is sent until CTS is pulled low.
+ *  FLOW_AUTO Like FLOW_ON, but CTS is only obeyed once it has been seen
+ *            asserted since the host opened the port (raised DTR). An
+ *            unconnected CTS never arms it, a real peer arms it at once.
+ *            Caveat: a peer that starts out with CTS deasserted is sent to
+ *            until it first asserts CTS.
+ *
+ * With FLOW_ON / FLOW_AUTO, RTS is asserted while the host has RTS set
+ * (Linux does while the port is open) and the receive buffer has room. */
+#define FLOW_OFF     0
+#define FLOW_ON      1
+#define FLOW_AUTO    2
+
 #ifndef P0_HW_FLOW
-#define P0_HW_FLOW   1
+#define P0_HW_FLOW   FLOW_AUTO
 #endif
 #ifndef P1_HW_FLOW
-#define P1_HW_FLOW   1
+#define P1_HW_FLOW   FLOW_AUTO
 #endif
 
 /* DTR output following the host, and DSR / DCD / RI inputs reported to the
