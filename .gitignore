@@ -8,3 +8,4 @@ obj/
 *.sym
 test/build/
 test/sim/build/
+__pycache__/
