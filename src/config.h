@@ -94,4 +94,9 @@
 #define RTS_OFF_FREE 32
 #define RTS_ON_FREE  64
 
+/* Debug: sampling profiler on Timer3 (see profiler.h, tools/fwprofile.py) */
+#ifndef PROFILER
+#define PROFILER     0
+#endif
+
 #endif

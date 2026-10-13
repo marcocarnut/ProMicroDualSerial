@@ -67,6 +67,11 @@ The RX and TX LEDs blink on UART activity.
 * On hardware, wire TX0 -> pin 4 and pin 9 -> RX1 and run
   `tools/loopback_test.py`: data both ways through both UARTs at once for
   many line codings, plus error counters and breaks.
+* Profiling on the board: `make clean && make EXTRA=-DPROFILER=1`, flash,
+  then `tools/fwprofile.py --mode both` runs full duplex traffic over the
+  loopback rig and prints where the CPU spent its time (Timer3 samples the
+  PC; the share of samples held off by the non-nestable timer ISRs is
+  reported separately).
 
 ## Soft UART design
 

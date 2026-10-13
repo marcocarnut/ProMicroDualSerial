@@ -1,0 +1,26 @@
+/*
+ * Sampling profiler for the real board (debug builds: make EXTRA=-DPROFILER=1).
+ *
+ * Timer3 interrupts the CPU at pseudo-random intervals and counts where it
+ * was in a histogram of 32-byte code buckets. The Timer1 ISRs can't be
+ * interrupted, so a sample due while one runs lands after it; how late each
+ * sample was is recorded too, which measures the time spent in them.
+ * tools/fwprofile.py collects the results and maps them to functions.
+ */
+#ifndef PROFILER_H
+#define PROFILER_H
+
+#include "ring.h"
+
+#if PROFILER
+void profiler_init(void);
+/* Begin dumping the results (and reset them) into 'r', in pieces. */
+void profiler_report(void);
+void profiler_task(ring_t* r);
+#else
+static inline void profiler_init(void) {}
+static inline void profiler_report(void) {}
+static inline void profiler_task(ring_t* r) { (void)r; }
+#endif
+
+#endif

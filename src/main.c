@@ -20,6 +20,7 @@
 #include "hwuart.h"
 #include "softuart.h"
 #include "gpio.h"
+#include "profiler.h"
 
 #define NUM_PORTS 2
 
@@ -319,6 +320,8 @@ static void bridge_task(uint8_t port, uint32_t now)
 		if (b->pending & PEND_CONFIG)
 		{
 			u->configure(&b->line);
+			if (PROFILER && port == 0 && b->line.BaudRateBPS == 110)
+			  profiler_report();    /* debug builds: see profiler.h */
 			if (b->break_active)
 			  u->set_break(true);
 		}
@@ -361,6 +364,7 @@ int main(void)
 	hwuart_init();
 	softuart_init();
 	USB_Init();
+	profiler_init();
 	GlobalInterruptEnable();
 
 	for (;;)
@@ -371,6 +375,7 @@ int main(void)
 		for (uint8_t i = 0; i < NUM_PORTS; i++)
 		  bridge_task(i, now);
 		leds_task(now);
+		profiler_task(bridge[0].uart->rx);
 
 		if (enter_bootloader)
 		  reboot_to_bootloader();
