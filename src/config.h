@@ -24,10 +24,15 @@
 
 /* ---- Soft UART (port 1) ----------------------------------------------
  * Rates outside this range are clamped. Up to 115200 it runs full duplex at
- * the full line rate; 230400 works for bursts (continuous RX at that rate
- * is more than the CPU can decode). */
+ * the full line rate. Above that a bit is shorter than the worst case
+ * interrupt latency: TX alone still works, but RX loses edges (measured at
+ * 250000), so faster rates are not offered. */
+#ifndef SOFTUART_MIN_BAUD
 #define SOFTUART_MIN_BAUD          50
-#define SOFTUART_MAX_BAUD          230400
+#endif
+#ifndef SOFTUART_MAX_BAUD
+#define SOFTUART_MAX_BAUD          115200
+#endif
 
 /* ---- Flow control and modem control lines ------------------------------
  * Pins are given as <port letter>,<bit>. All of these signals are active

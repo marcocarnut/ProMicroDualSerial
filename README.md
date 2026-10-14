@@ -13,7 +13,10 @@ Features:
 
 * All CDC line codings on both ports: 5-8 data bits, none / odd / even /
   mark / space parity, 1 / 1.5 / 2 stop bits. Port 0 runs from 245 baud to
-  2 Mbaud, port 1 from 50 to 230400 baud.
+  2 Mbaud, port 1 from 50 to 115200 baud; requests outside are clamped.
+  At 16 MHz the USART can't hit some standard rates above 115200 closely
+  (230400 comes out 3.5% slow); 250000, 500000, 1000000 and 2000000 are
+  exact.
 * Breaks both ways; framing, parity, overrun and break errors reported to
   the host (Linux counts them in `TIOCGICOUNT`).
 * RTS/CTS hardware flow control on both ports, plus DTR out and DSR, DCD
@@ -199,7 +202,6 @@ time):
 | 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~100%                |
 | 115200, full duplex loopback, random data        | ~100%                                |
 | 115200, full duplex loopback, 0x55 (worst case)  | ~85% (every bit boundary is an edge) |
-| 230400, RX continuous                            | beyond the CPU: bursts only          |
 
 ## License
 
