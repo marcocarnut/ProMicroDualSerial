@@ -14,7 +14,7 @@
  *    is handed to the USART, so at most the byte in progress and one in
  *    UDR1 go out after CTS is deasserted.
  *
- * Limits at 16 MHz: 245 baud to 2 Mbaud. Requests outside are clamped.
+ * Limits at 16 MHz: 244 baud to 2 Mbaud. Requests outside are clamped.
  */
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -271,11 +271,13 @@ void hwuart_rx_body(void)
 }
 
 /* Pick UBRR and U2X for the closest achievable rate. */
-static void set_baud(uint32_t baud)
+/* Best UBRR1 / U2X1 for a baud rate; returns the rate they give. */
+static uint32_t calc_baud(uint32_t baud, uint16_t* ubrr_out, uint8_t* u2x_out)
 {
 	uint8_t  best_u2x  = 0;
 	uint16_t best_ubrr = 0;
 	uint32_t best_err  = UINT32_MAX;
+	uint32_t best_rate = 0;
 
 	if (baud == 0)
 	  baud = 9600;
@@ -295,11 +297,35 @@ static void set_baud(uint32_t baud)
 			best_err  = err;
 			best_ubrr = ubrr;
 			best_u2x  = u2x;
+			best_rate = (F_CPU + div * (ubrr + 1) / 2) / (div * (ubrr + 1));
 		}
 	}
 
-	UBRR1     = best_ubrr;
-	UCSR1A    = best_u2x ? _BV(U2X1) : 0;
+	*ubrr_out = best_ubrr;
+	*u2x_out  = best_u2x;
+	return best_rate;
+}
+
+static void set_baud(uint32_t baud)
+{
+	uint16_t ubrr;
+	uint8_t  u2x;
+	calc_baud(baud, &ubrr, &u2x);
+	UBRR1  = ubrr;
+	UCSR1A = u2x ? _BV(U2X1) : 0;
+}
+
+static void hwuart_effective(CDC_LineEncoding_t* le)
+{
+	uint16_t ubrr;
+	uint8_t  u2x;
+	le->BaudRateBPS = calc_baud(le->BaudRateBPS, &ubrr, &u2x);
+	if (le->DataBits < 5 || le->DataBits > 8)
+	  le->DataBits = 8;
+	if (le->ParityType > CDC_PARITY_Space)
+	  le->ParityType = CDC_PARITY_None;
+	if (le->CharFormat != CDC_LINEENCODING_OneStopBit)
+	  le->CharFormat = CDC_LINEENCODING_TwoStopBits;   /* 1.5 is sent as 2 */
 }
 
 static void hwuart_configure(const CDC_LineEncoding_t* le)
@@ -419,6 +445,7 @@ const uart_port_t hwuart_port =
 	.rx        = &rx_ring,
 	.errors    = &rx_errors,
 	.configure = hwuart_configure,
+	.effective = hwuart_effective,
 	.task      = hwuart_task,
 	.tx_start  = hwuart_tx_start,
 	.tx_idle   = hwuart_tx_idle,

@@ -26,6 +26,11 @@ typedef struct
 	 * flow control) is discarded. */
 	void (*configure)(const CDC_LineEncoding_t* le);
 
+	/* Rewrite a requested line coding into what configure() would actually
+	 * run: clamped baud rate rounded to what the timer / USART divisor
+	 * gives, unsupported settings replaced by the ones used instead. */
+	void (*effective)(CDC_LineEncoding_t* le);
+
 	/* Main loop service routine. */
 	void (*task)(void);
 

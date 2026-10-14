@@ -12,11 +12,14 @@ at the full line rate, at the same time:
 Features:
 
 * All CDC line codings on both ports: 5-8 data bits, none / odd / even /
-  mark / space parity, 1 / 1.5 / 2 stop bits. Port 0 runs from 245 baud to
+  mark / space parity, 1 / 1.5 / 2 stop bits. Port 0 runs from 244 baud to
   2 Mbaud, port 1 from 50 to 115200 baud; requests outside are clamped.
   At 16 MHz the USART can't hit some standard rates above 115200 closely
   (230400 comes out 3.5% slow); 250000, 500000, 1000000 and 2000000 are
-  exact.
+  exact. Reading the line coding back (GET_LINE_CODING) returns what the
+  port actually runs: the clamped rate as the divisors give it (e.g.
+  115200 is 117647 on port 0 and 115108 on port 1), and 1.5 stop bits as
+  2.
 * Breaks both ways; framing, parity, overrun and break errors reported to
   the host (Linux counts them in `TIOCGICOUNT`).
 * RTS/CTS hardware flow control on both ports, plus DTR out and DSR, DCD

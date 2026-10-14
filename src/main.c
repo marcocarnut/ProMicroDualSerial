@@ -418,12 +418,20 @@ static int8_t port_of(const USB_ClassInfo_CDC_Device_t* const c)
 	return (c == &cdc[0]) ? 0 : 1;
 }
 
+/* GET_LINE_CODING returns what the port actually runs (clamped and rounded
+ * baud rate, 1.5 stop bits as 2), not what the host asked for. */
+static void report_line(uint8_t port)
+{
+	cdc[port].State.LineEncoding = bridge[port].line;
+	bridge[port].uart->effective(&cdc[port].State.LineEncoding);
+}
+
 void EVENT_USB_Device_ConfigurationChanged(void)
 {
 	for (uint8_t i = 0; i < NUM_PORTS; i++)
 	{
 		CDC_Device_ConfigureEndpoints(&cdc[i]);
-		cdc[i].State.LineEncoding = bridge[i].line;   /* report what is in effect */
+		report_line(i);
 		bridge[i].in_last_full = false;
 		ring_flush(bridge[i].uart->rx);
 	}
@@ -483,12 +491,13 @@ void EVENT_CDC_Device_LineEncodingChanged(USB_ClassInfo_CDC_Device_t* const c)
 
 	bridge[port].line     = c->State.LineEncoding;
 	bridge[port].pending |= PEND_CONFIG;
+	report_line(port);
 }
 
 void EVENT_CDC_Device_ControLineStateChanged(USB_ClassInfo_CDC_Device_t* const c)
 {
 #if BOOTLOADER_1200BAUD_TOUCH
-	if (c == &cdc[0] && c->State.LineEncoding.BaudRateBPS == 1200 &&
+	if (c == &cdc[0] && bridge[0].line.BaudRateBPS == 1200 &&
 	    !(c->State.ControlLineStates.HostToDevice & CDC_CONTROL_LINE_OUT_DTR))
 	  enter_bootloader = true;
 #endif

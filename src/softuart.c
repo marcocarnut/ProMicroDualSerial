@@ -411,29 +411,58 @@ static void softuart_set_break(bool on)
 	}
 }
 
-static void softuart_configure(const CDC_LineEncoding_t* le)
+static const uint16_t prescalers[] = { 1, 8, 64, 256, 1024 };
+
+static uint32_t clamp_baud(uint32_t baud)
 {
-	uint32_t baud = le->BaudRateBPS;
 	if (baud == 0)
 	  baud = 9600;
 	if (baud < SOFTUART_MIN_BAUD)
 	  baud = SOFTUART_MIN_BAUD;
 	if (baud > SOFTUART_MAX_BAUD)
 	  baud = SOFTUART_MAX_BAUD;
+	return baud;
+}
+
+/* Timer3 (TX): one bit per period, the smallest prescaler that fits */
+static uint16_t tx_period(uint32_t baud, uint8_t* cs3_out)
+{
+	uint8_t cs3 = 0;
+	while (cs3 < 4 && F_CPU / prescalers[cs3] / baud > 65535)
+	  cs3++;
+	*cs3_out = cs3;
+	return (F_CPU / prescalers[cs3] + baud / 2) / baud;
+}
+
+/* The rate reported is the TX one: whole timer ticks per bit. RX samples at
+ * the clamped rate itself; the two differ by less than 0.1%. */
+static void softuart_effective(CDC_LineEncoding_t* le)
+{
+	uint8_t  cs3;
+	uint16_t period = tx_period(clamp_baud(le->BaudRateBPS), &cs3);
+	uint32_t hz     = F_CPU / prescalers[cs3];
+	le->BaudRateBPS = (hz + period / 2) / period;
+	if (le->DataBits < 5 || le->DataBits > 8)
+	  le->DataBits = 8;
+	if (le->ParityType > CDC_PARITY_Space)
+	  le->ParityType = CDC_PARITY_None;
+	if (le->CharFormat != CDC_LINEENCODING_OneStopBit)
+	  le->CharFormat = CDC_LINEENCODING_TwoStopBits;   /* 1.5 is sent as 2 */
+}
+
+static void softuart_configure(const CDC_LineEncoding_t* le)
+{
+	uint32_t baud = clamp_baud(le->BaudRateBPS);
 
 	/* Timer1 (RX): smallest prescaler for which the longest frame fits */
-	static const uint16_t prescalers[] = { 1, 8, 64, 256, 1024 };
 	uint8_t cs = 0;
 	while (cs < 4 && F_CPU / prescalers[cs] / baud * SU_MAX_FRAME_BITS > 65000)
 	  cs++;
 
 	su_cfg_init(&cfg, F_CPU / prescalers[cs], baud, le->DataBits, le->ParityType, le->CharFormat);
 
-	/* Timer3 (TX): one bit per period, the smallest prescaler that fits */
-	uint8_t cs3 = 0;
-	while (cs3 < 4 && F_CPU / prescalers[cs3] / baud > 65535)
-	  cs3++;
-	uint16_t period = (F_CPU / prescalers[cs3] + baud / 2) / baud;
+	uint8_t  cs3;
+	uint16_t period = tx_period(baud, &cs3);
 	/* 1.5 stop bits are sent as 2 */
 	uint8_t fbits = 1 + cfg.data_bits + (cfg.parity != SU_PARITY_NONE) + (le->CharFormat ? 2 : 1);
 
@@ -499,6 +528,7 @@ const uart_port_t softuart_port =
 	.rx        = &rx_ring,
 	.errors    = &errors,
 	.configure = softuart_configure,
+	.effective = softuart_effective,
 	.task      = softuart_task,
 	.tx_start  = softuart_tx_start,
 	.tx_idle   = softuart_tx_idle,
