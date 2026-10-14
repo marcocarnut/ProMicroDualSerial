@@ -339,10 +339,9 @@ int main(int argc, char** argv)
 		if (qstat && fed < count && avr->cycle >= 300000 && avr->cycle >= qs_next)
 		{
 			qs_next = avr->cycle + 500;
-			uint8_t g0 = avr->data[0x3E], qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
-			/* running (found a frame / nothing to start last time) or
-			 * stopped; queue of 2-byte frame words */
-			int st = !(avr->data[0x71] & 2) ? 2 : (g0 & 2) ? 1 : 0;
+			uint8_t qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
+			/* running or stopped; queue of 2-byte frame words */
+			int st = !(avr->data[0x71] & 2) ? 2 : 0;
 			int q  = (uint8_t)(qh - qt) / 2;
 			int qb = q == 0 ? 0 : q < 12 ? 1 : q < 40 ? 2 : 3;
 			int rb = (uint8_t)(avr->data[qs_ring & 0xFFFF] - avr->data[(qs_ring & 0xFFFF) + 1]) != 0;

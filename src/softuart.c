@@ -80,8 +80,6 @@
 #endif
 
 /* GPIOR0 bits */
-#define TXS_IDLE   1          /* the TX ISR found nothing to start (queue
-                                 empty or CTS) since the last start bit */
 #define TXS_CTSARM 2          /* FLOW_AUTO: CTS is being obeyed */
 
 /* The edge ring (RX) and the frame word queue (TX) are 256-byte aligned
@@ -215,24 +213,30 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 		"ld   r3, Z+"               "\n\t"
 		"out  %[tail], r30"         "\n\t"
 		"lds  r4, %[fbits]"         "\n\t"
-		"cbi  %[state], %[idle]"    "\n\t"
 	"3:"	"pop  r31"                  "\n\t"
 		"pop  r30"                  "\n\t"
 		"rjmp 1b"                   "\n\t"
 
-		/* nothing to start: send one more 1 bit and look again */
-	"4:"	"sbi  %[state], %[idle]"    "\n\t"
-		"ldi  r30, 1"               "\n\t"
+		/* Nothing to start (queue empty or CTS holding it off): stop
+		 * right away rather than polling every bit, in the state "one
+		 * more 1 bit, then fetch". The last stop bit is programmed, so a
+		 * restart by the main loop adds at least a bit of idle line and
+		 * never cuts the stop bit short. */
+	"4:"	"ldi  r30, 1"               "\n\t"
 		"mov  r2, r30"              "\n\t"
 		"mov  r4, r30"              "\n\t"
+		"lds  r30, %[timsk3]"       "\n\t"
+		"andi r30, ~%[ocie]"        "\n\t"
+		"sts  %[timsk3], r30"       "\n\t"
 		"rjmp 3b"                   "\n\t"
 		::
 		[tccr3a]   "n" (_SFR_MEM_ADDR(TCCR3A)),
+		[timsk3]   "n" (_SFR_MEM_ADDR(TIMSK3)),
+		[ocie]     "M" (_BV(OCIE3A)),
 		[tail]     "I" (_SFR_IO_ADDR(TXW_TAIL)),
 		[head]     "i" (&su_txw_head),
 		[fbits]    "i" (&su_tx_fbits),
 		[state]    "I" (_SFR_IO_ADDR(GPIOR0)),
-		[idle]     "I" (TXS_IDLE),
 		[ctsarm]   "I" (TXS_CTSARM),
 		[qbuf]     "i" (bufs.q),
 		[ctspin]   "I" (_SFR_IO_ADDR(GPIO_PINREG(P1_CTS_PIN))),
@@ -243,6 +247,14 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 
 /* ------------------------------------------------------------------------ */
 
+#if PROFILER
+/* why encoding stopped, per call (see profiler.h) */
+volatile uint16_t su_tx_stats[SU_TX_STATS];
+#define TX_STAT(i) do { if (su_tx_stats[i] != 0xFFFF) su_tx_stats[i]++; } while (0)
+#else
+#define TX_STAT(i) do { } while (0)
+#endif
+
 void su_rx_frame(uint8_t data, uint8_t flags)
 {
 	errors |= flags;
@@ -251,6 +263,7 @@ void su_rx_frame(uint8_t data, uint8_t flags)
 
 	if (!ring_free(&rx_ring))
 	{
+		TX_STAT(7);
 		errors |= CDC_CONTROL_LINE_IN_OVERRUNERROR;
 		return;
 	}
@@ -297,12 +310,13 @@ check_overrun:
 	if (su_e_overrun)
 	{
 		su_e_overrun = 0;
+		TX_STAT(6);
 		errors |= CDC_CONTROL_LINE_IN_OVERRUNERROR;
 	}
 }
 
 /* Queue frame words for bytes from the tx ring while there is room, then
- * make sure the transmitter is running (or stop it when it has run dry).
+ * make sure the transmitter is running.
  *
  * At most TX_ENCODE_BATCH frames are queued per call, which keeps main loop
  * iterations short so the receive side (which, unlike TX, cannot be held
@@ -317,14 +331,6 @@ check_overrun:
  * also means fewer TX interrupts. */
 #ifndef RX_BACKLOG_MAX
 #define RX_BACKLOG_MAX  20      /* edges; RX loses data in the simulator from ~36 */
-#endif
-
-#if PROFILER
-/* why encoding stopped, per call (see profiler.h) */
-volatile uint16_t su_tx_stats[SU_TX_STATS];
-#define TX_STAT(i) do { if (su_tx_stats[i] != 0xFFFF) su_tx_stats[i]++; } while (0)
-#else
-#define TX_STAT(i) do { } while (0)
 #endif
 
 /* The frame word: start bit (0) in bit 0, then the data, parity and stop
@@ -370,20 +376,10 @@ static void softuart_tx_start(void)
 
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
-		if (TIMSK3 & _BV(OCIE3A))
-		{
-			/* Stop once the ISR has found nothing to start (queue empty or
-			 * CTS holding it off): the last stop bit is programmed, and
-			 * the ISR state is "one idle bit, then fetch", so a restart
-			 * adds at least a bit of idle line and never cuts the stop
-			 * bit short. */
-			if ((GPIOR0 & _BV(TXS_IDLE)) && (TXW_TAIL == su_txw_head || CTS_BLOCKED()))
-			  TIMSK3 &= ~_BV(OCIE3A);
-		}
-		else if (TXW_TAIL != su_txw_head && !CTS_BLOCKED())
+		/* (the ISR stops itself when it finds nothing to start) */
+		if (!(TIMSK3 & _BV(OCIE3A)) && TXW_TAIL != su_txw_head && !CTS_BLOCKED())
 		{
 			TX_STAT(5);
-			GPIOR0 &= ~_BV(TXS_IDLE);
 			TIMSK3 |= _BV(OCIE3A);
 		}
 	}
@@ -436,7 +432,6 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 		uint8_t line = (RX_PIN >> RX_BIT) & 1;
 
 		TIMSK3 &= ~_BV(OCIE3A);
-		GPIOR0 &= ~_BV(TXS_IDLE);                     /* keeps TXS_CTSARM */
 		TXW_TAIL    = su_txw_head;
 		su_tx_fbits = fbits;
 		tx_isr_idle();

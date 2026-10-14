@@ -5,9 +5,9 @@ board: reset the counts, run traffic, read them back and map them to
 functions.
 
     tools/fwprofile.py [--elf ProMicroDualUART.elf] [--baud 115200] [--bytes 20000]
-                       [--mode both|a|b|idle] [/dev/ttyACM0 /dev/ttyACM1]
+                       [--mode both|a|b|idle] [--fill 0x55] [/dev/ttyACM0 /dev/ttyACM1]
 
-Traffic is random data over the loopback rig (see loopback_test.py): 'a' is
+Traffic is random data (or --fill: that byte throughout) over the loopback rig (see loopback_test.py): 'a' is
 ACM0 -> ACM1 (soft RX), 'b' ACM1 -> ACM0 (soft TX), 'both' at once, 'idle'
 just waits. Setting ACM0 to 110 baud makes the firmware dump the profile.
 
@@ -69,7 +69,7 @@ def attribute(buckets, elf):
 
 def main():
     args = sys.argv[1:]
-    opt = {"--elf": "ProMicroDualUART.elf", "--baud": "115200", "--bytes": "20000", "--mode": "both"}
+    opt = {"--elf": "ProMicroDualUART.elf", "--baud": "115200", "--bytes": "20000", "--mode": "both", "--fill": None}
     ports = []
     while args:
         a = args.pop(0)
@@ -90,8 +90,10 @@ def main():
     lt.drain(fa)
 
     random.seed(3)
-    da = bytes(random.getrandbits(8) for _ in range(n)) if mode in ("both", "a") else b""
-    db = bytes(random.getrandbits(8) for _ in range(n)) if mode in ("both", "b") else b""
+    fill = opt["--fill"]
+    gen = (lambda: bytes([int(fill, 0)]) * n) if fill else (lambda: bytes(random.getrandbits(8) for _ in range(n)))
+    da = gen() if mode in ("both", "a") else b""
+    db = gen() if mode in ("both", "b") else b""
     t0 = time.time()
     if mode == "idle":
         time.sleep(n / (baud / 10.0))
@@ -133,6 +135,7 @@ def main():
         print("soft TX encoder, per call: %d calls; stopped by RX backlog gate %d, batch limit %d, "
               "empty tx ring %d, full frame word queue %d; restarts from idle %d (the counts saturate at 65535)"
               % tuple(stats.get(i, 0) for i in range(6)))
+        print("soft RX overruns: edge ring %d, rx ring %d" % (stats.get(6, 0), stats.get(7, 0)))
     print()
 
     funcs = attribute(buckets, opt["--elf"])

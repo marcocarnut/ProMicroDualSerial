@@ -14,8 +14,9 @@
 
 /* softuart_tx_start() counters: calls, RX backlog gate closed with data
  * waiting, batch used up with data waiting, tx ring empty, frame word
- * queue full, transmitter (re)started from idle */
-#define SU_TX_STATS 6
+ * queue full, transmitter (re)started from idle; then soft RX overruns:
+ * edge ring, rx ring */
+#define SU_TX_STATS 8
 extern volatile uint16_t su_tx_stats[SU_TX_STATS];
 
 #if PROFILER

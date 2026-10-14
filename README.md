@@ -94,8 +94,9 @@ latency; the interrupt handlers only have to keep up.
   OC3A's set/clear mode, so the pin switches on the next match, exactly on
   the bit grid. It keeps its state in the reserved registers and pushes
   nothing: 21 cycles per bit including interrupt entry, ~250 per 8N1 frame
-  with fetching the next word. Bit times are whole timer ticks (0.08% slow
-  at 115200), and 1.5 stop bits are sent as 2.
+  with fetching the next word. When there is no word to fetch (or CTS holds
+  it off) it disables itself until the main loop queues one. Bit times are
+  whole timer ticks (0.08% slow at 115200), and 1.5 stop bits are sent as 2.
 * **RX:** Timer1 runs free with a per-baud prescaler. The capture ISR (45
   cycles) stores the 16-bit timestamp of each edge and flips ICES1. The main
   loop rebuilds the bits by sampling mid-bit between edges. The decoder
@@ -124,6 +125,10 @@ runs at 100% throughout), host-side timing:
 |--------------------------------|----------------------|----------------------|
 | one direction at a time        | 100%                 | 100%                 |
 | full duplex, 8N1 / 8E1 / 7O1   | 100%                 | 100% / 100% / 100%   |
+| same, all bytes 0x55           | 100%                 | 34% / 47% / 56%      |
+
+0x55 in 8N1 is a square wave, an edge at every bit boundary: the most work
+for the receiver. TX gives way, so RX stays lossless.
 
 In the simulator (port 0 carries the same traffic at the same time):
 
@@ -132,7 +137,7 @@ In the simulator (port 0 carries the same traffic at the same time):
 | <= 57600, full duplex, continuous                | 100% of line rate both ways          |
 | 115200, RX at 100% (any framing) + TX offered    | RX lossless, TX ~100%                |
 | 115200, full duplex loopback, random data        | ~100%                                |
-| 115200, full duplex loopback, 0x55 (worst case)  | ~79% (every bit boundary is an edge) |
+| 115200, full duplex loopback, 0x55 (worst case)  | ~85% (every bit boundary is an edge) |
 | 230400, RX continuous                            | beyond the CPU: bursts only          |
 
 ## Status
