@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hardware test for ProMicroDualUART (stdlib only, Linux).
+Hardware test for ProMicroDualSerial (stdlib only, Linux).
 
 Wire the two UARTs to each other like a null modem cable:
 

@@ -1,5 +1,5 @@
 #
-# ProMicroDualUART - dual USB CDC <-> UART bridge for the ATmega32U4 (Pro Micro)
+# ProMicroDualSerial - dual USB CDC <-> UART bridge for the ATmega32U4 (Pro Micro)
 #
 # Build:   make
 # Flash:   make flash            (Caterina bootloader, via 1200 baud touch)
@@ -12,7 +12,7 @@ BOARD        = NONE
 F_CPU        = 16000000
 F_USB        = $(F_CPU)
 OPTIMIZATION = s
-TARGET       = ProMicroDualUART
+TARGET       = ProMicroDualSerial
 SRC          = src/main.c src/Descriptors.c src/clock.c src/hwuart.c src/softuart.c src/softuart_codec.c src/softuart_dec.S src/profiler.c $(LUFA_SRC_USB) $(LUFA_SRC_USBCLASS)
 LUFA_PATH    = lufa/LUFA
 CC_FLAGS     = -DUSE_LUFA_CONFIG_HEADER -IConfig/ -Isrc/ -Wextra -Wno-unused-parameter

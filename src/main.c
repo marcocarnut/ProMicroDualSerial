@@ -1,5 +1,5 @@
 /*
- * ProMicroDualUART - dual USB CDC <-> UART bridge for the ATmega32U4.
+ * ProMicroDualSerial - dual USB CDC <-> UART bridge for the ATmega32U4.
  *
  * This file is the USB side: it moves data between the CDC endpoints and
  * each port's rings, applies line coding / break requests at safe points

@@ -1,4 +1,4 @@
-# ProMicroDualUART
+# ProMicroDualSerial
 
 Dual USB-to-serial adapter firmware for the ATmega32U4 (SparkFun Pro Micro
 and clones), built on [LUFA](https://github.com/abcminiuser/lufa). The board
@@ -55,7 +55,8 @@ handshake and modem pins can be moved in `src/config.h`.
 
 Needs `avr-gcc`, `avr-libc`, `avrdude` and `make`.
 
-    git clone --recursive <this repository>    # or: git submodule update --init
+    git clone --recursive https://github.com/marcocarnut/ProMicroDualSerial.git
+    cd ProMicroDualSerial
     make
     make flash
 

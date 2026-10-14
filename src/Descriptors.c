@@ -1,6 +1,9 @@
 /*
  * USB descriptors for the dual CDC-ACM bridge. Based on LUFA's
- * DualVirtualSerial demo (Copyright 2021 Dean Camera, MIT-style license).
+ * DualVirtualSerial demo (Copyright 2021 Dean Camera, MIT-style license),
+ * but the interfaces declare no specific protocol instead of AT commands,
+ * so ModemManager doesn't probe the ports (and send AT commands down the
+ * serial lines) when the board is plugged in.
  */
 #include "Descriptors.h"
 #include "config.h"
@@ -38,7 +41,7 @@ const USB_Descriptor_Device_t PROGMEM DeviceDescriptor =
 			.TotalInterfaces     = 2,                                                                        \
 			.Class               = CDC_CSCP_CDCClass,                                                        \
 			.SubClass            = CDC_CSCP_ACMSubclass,                                                     \
-			.Protocol            = CDC_CSCP_ATCommandProtocol,                                               \
+			.Protocol            = CDC_CSCP_NoSpecificProtocol,                                              \
 			.IADStrIndex         = str                                                                       \
 		},                                                                                                   \
 	.CDC##n##_CCI_Interface =                                                                                \
@@ -49,7 +52,7 @@ const USB_Descriptor_Device_t PROGMEM DeviceDescriptor =
 			.TotalEndpoints      = 1,                                                                        \
 			.Class               = CDC_CSCP_CDCClass,                                                        \
 			.SubClass            = CDC_CSCP_ACMSubclass,                                                     \
-			.Protocol            = CDC_CSCP_ATCommandProtocol,                                               \
+			.Protocol            = CDC_CSCP_NoSpecificProtocol,                                              \
 			.InterfaceStrIndex   = str                                                                       \
 		},                                                                                                   \
 	.CDC##n##_Functional_Header =                                                                            \

@@ -1,5 +1,5 @@
 /*
- * LUFA library compile-time configuration for ProMicroDualUART.
+ * LUFA library compile-time configuration for ProMicroDualSerial.
  */
 #ifndef _LUFA_CONFIG_H_
 #define _LUFA_CONFIG_H_

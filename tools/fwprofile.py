@@ -4,7 +4,7 @@ Profile a PROFILER=1 build (make clean && make EXTRA=-DPROFILER=1) on the
 board: reset the counts, run traffic, read them back and map them to
 functions.
 
-    tools/fwprofile.py [--elf ProMicroDualUART.elf] [--baud 115200] [--bytes 20000]
+    tools/fwprofile.py [--elf ProMicroDualSerial.elf] [--baud 115200] [--bytes 20000]
                        [--mode both|a|b|idle] [--fill 0x55] [/dev/ttyACM0 /dev/ttyACM1]
 
 Traffic is random data (or --fill: that byte throughout) over the loopback rig (see loopback_test.py): 'a' is
@@ -69,7 +69,7 @@ def attribute(buckets, elf):
 
 def main():
     args = sys.argv[1:]
-    opt = {"--elf": "ProMicroDualUART.elf", "--baud": "115200", "--bytes": "20000", "--mode": "both", "--fill": None}
+    opt = {"--elf": "ProMicroDualSerial.elf", "--baud": "115200", "--bytes": "20000", "--mode": "both", "--fill": None}
     ports = []
     while args:
         a = args.pop(0)

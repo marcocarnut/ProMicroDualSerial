@@ -1,5 +1,5 @@
 /*
- * Build-time configuration for ProMicroDualUART.
+ * Build-time configuration for ProMicroDualSerial.
  */
 #ifndef CONFIG_H
 #define CONFIG_H
@@ -9,8 +9,8 @@
  * personal use; get your own (e.g. from pid.codes) before distributing. */
 #define USB_VID                  0x03EB
 #define USB_PID                  0x204E
-#define USB_MANUFACTURER_STRING  L"ProMicroDualUART"
-#define USB_PRODUCT_STRING       L"Pro Micro Dual UART"
+#define USB_MANUFACTURER_STRING  L"ProMicroDualSerial"
+#define USB_PRODUCT_STRING       L"Pro Micro Dual Serial"
 #define USB_CDC0_STRING          L"UART0 (hardware USART)"
 #define USB_CDC1_STRING          L"UART1 (timer soft UART)"
 

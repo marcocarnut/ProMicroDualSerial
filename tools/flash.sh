@@ -9,7 +9,7 @@
 # usage: tools/flash.sh [/dev/ttyACM0] [firmware.hex]
 set -e
 PORT=${1:-/dev/ttyACM0}
-HEX=${2:-ProMicroDualUART.hex}
+HEX=${2:-ProMicroDualSerial.hex}
 
 if [ -e "$PORT" ]; then
 	echo "Resetting $PORT into the bootloader (1200 baud touch)..."
@@ -22,7 +22,7 @@ if [ -e "$PORT" ]; then
 	# wait for the firmware's ports (both of them) to go away, so the
 	# second one isn't mistaken for the bootloader's
 	i=0
-	while { [ -e "$PORT" ] || ls /dev/serial/by-id/*ProMicroDualUART* >/dev/null 2>&1; } && [ $i -lt 30 ]; do
+	while { [ -e "$PORT" ] || ls /dev/serial/by-id/*ProMicroDualSerial* >/dev/null 2>&1; } && [ $i -lt 30 ]; do
 		sleep 0.1; i=$((i + 1))
 	done
 fi
