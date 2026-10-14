@@ -23,8 +23,9 @@
 #define BOOTLOADER_1200BAUD_TOUCH  1
 
 /* ---- Soft UART (port 1) ----------------------------------------------
- * Line codings outside this range are clamped. 115200 is the design target;
- * at higher rates the margin for interrupt latency (one bit time) gets thin. */
+ * Rates outside this range are clamped. Up to 115200 it runs full duplex at
+ * the full line rate; 230400 works for bursts (continuous RX at that rate
+ * is more than the CPU can decode). */
 #define SOFTUART_MIN_BAUD          50
 #define SOFTUART_MAX_BAUD          230400
 
@@ -94,7 +95,7 @@
 #define RTS_OFF_FREE 32
 #define RTS_ON_FREE  64
 
-/* Debug: sampling profiler on Timer3 (see profiler.h, tools/fwprofile.py) */
+/* Debug: sampling profiler on Timer1 compare B (see profiler.h, tools/fwprofile.py) */
 #ifndef PROFILER
 #define PROFILER     0
 #endif

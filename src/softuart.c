@@ -247,22 +247,12 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 
 /* ------------------------------------------------------------------------ */
 
-/* Frames queued ahead of the transmitter: enough to ride out a long main
- * loop iteration, and no more, because the gate above only holds off new
- * frames. Queued ones still go out, and while received edges pile up the
- * edge ring lasts ~12 frames (0x55 in 8N1, an edge every bit). With the
- * whole queue (127 frames) a TX burst queued during an RX pause overran it
- * once RX resumed. */
-#ifndef TXQ_MAX
-#define TXQ_MAX 8
-#endif
-
 #if PROFILER
-/* why encoding stopped, per call (see profiler.h) */
-volatile uint16_t su_tx_stats[SU_TX_STATS];
-#define TX_STAT(i) do { if (su_tx_stats[i] != 0xFFFF) su_tx_stats[i]++; } while (0)
+/* event counters for the profiler report (see profiler.h) */
+volatile uint16_t su_stats[SU_STATS];
+#define SU_STAT(i) do { if (su_stats[i] != 0xFFFF) su_stats[i]++; } while (0)
 #else
-#define TX_STAT(i) do { } while (0)
+#define SU_STAT(i) do { } while (0)
 #endif
 
 void su_rx_frame(uint8_t data, uint8_t flags)
@@ -273,7 +263,7 @@ void su_rx_frame(uint8_t data, uint8_t flags)
 
 	if (!ring_free(&rx_ring))
 	{
-		TX_STAT(7);
+		SU_STAT(7);
 		errors |= CDC_CONTROL_LINE_IN_OVERRUNERROR;
 		return;
 	}
@@ -320,7 +310,7 @@ check_overrun:
 	if (su_e_overrun)
 	{
 		su_e_overrun = 0;
-		TX_STAT(6);
+		SU_STAT(6);
 		errors |= CDC_CONTROL_LINE_IN_OVERRUNERROR;
 	}
 }
@@ -341,6 +331,16 @@ check_overrun:
  * also means fewer TX interrupts. */
 #ifndef RX_BACKLOG_MAX
 #define RX_BACKLOG_MAX  20      /* edges; RX loses data in the simulator from ~36 */
+#endif
+
+/* Frames queued ahead of the transmitter: enough to ride out a long main
+ * loop iteration, and no more, because the gate above only holds off new
+ * frames. Queued ones still go out, and while received edges pile up the
+ * edge ring lasts ~12 frames (0x55 in 8N1, an edge every bit). With the
+ * whole queue (127 frames) a TX burst queued during an RX pause overran it
+ * once RX resumed. */
+#ifndef TXQ_MAX
+#define TXQ_MAX 8
 #endif
 
 /* The frame word: start bit (0) in bit 0, then the data, parity and stop
@@ -366,17 +366,17 @@ static void softuart_tx_start(void)
 	 * edges to the RX backlog meanwhile, far from filling the edge ring */
 	uint8_t n = ((uint8_t)(E_HEAD - su_e_tail) <= 2 * RX_BACKLOG_MAX) ? TX_ENCODE_BATCH : 0;
 
-	TX_STAT(0);
+	SU_STAT(0);
 	if (!n && !ring_empty(&tx_ring))
-	  TX_STAT(1);
+	  SU_STAT(1);
 
 	for (uint8_t i = 0; i < n; i++)
 	{
 		uint8_t h = su_txw_head;
-		if (ring_empty(&tx_ring))            { TX_STAT(3); break; }
-		if ((uint8_t)(h - TXW_TAIL) >= 2 * TXQ_MAX) { TX_STAT(4); break; }
+		if (ring_empty(&tx_ring))            { SU_STAT(3); break; }
+		if ((uint8_t)(h - TXW_TAIL) >= 2 * TXQ_MAX) { SU_STAT(4); break; }
 		if (PROFILER && i == n - 1 && ring_count(&tx_ring) > 1)
-		  TX_STAT(2);
+		  SU_STAT(2);
 		uint16_t w = tx_word(ring_get(&tx_ring));
 		bufs.q[h]     = w;
 		bufs.q[h + 1] = w >> 8;
@@ -389,7 +389,7 @@ static void softuart_tx_start(void)
 		/* (the ISR stops itself when it finds nothing to start) */
 		if (!(TIMSK3 & _BV(OCIE3A)) && TXW_TAIL != su_txw_head && !CTS_BLOCKED())
 		{
-			TX_STAT(5);
+			SU_STAT(5);
 			TIMSK3 |= _BV(OCIE3A);
 		}
 	}

@@ -10,9 +10,9 @@
  *  - Break: TX line held low via the port pin with the USART transmitter off;
  *    received breaks (framing error with all-zero data) are reported as
  *    breaks, not as a 0x00 byte.
- *  - CTS flow control (P0_HW_FLOW, see config.h): checked before each byte is handed to
- *    the USART, so at most the byte in progress and one in UDR1 go out
- *    after CTS is deasserted.
+ *  - CTS flow control (P0_HW_FLOW, see config.h): checked before each byte
+ *    is handed to the USART, so at most the byte in progress and one in
+ *    UDR1 go out after CTS is deasserted.
  *
  * Limits at 16 MHz: 245 baud to 2 Mbaud. Requests outside are clamped.
  */

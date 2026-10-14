@@ -14,9 +14,9 @@
  * moves to the state of the other level and no level is kept in a register
  * or tested. Per edge that doesn't complete a sample this is ~18 cycles.
  *
- * Registers (r2-r7 are left alone: the timer ISRs keep
- * their state there, see softuart.c). Everything that lives across the
- * su_dec_finish_frame() call is in call-saved registers:
+ * Registers (r2-r7 are left alone: the timer ISRs keep their state there,
+ * see softuart.c). Everything that lives across the su_dec_finish_frame()
+ * call is in call-saved registers:
  *   X        ring + tail                 r9       ring (high byte)
  *   r11:r10  start                       r8       tail, across the call
  *   r13:r12  now                         r15:r14  &c->sample[0]

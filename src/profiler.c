@@ -133,7 +133,7 @@ static void put_num(ring_t* r, char tag, uint16_t a, uint16_t b)
 
 /* Lines: "N <total samples / 65536 hex> <total % 65536>", "P <bucket start
  * byte address, hex> <count>", "L <lateness bin> <count>", "S <counter>
- * <count>" (su_tx_stats), then "E". */
+ * <count>" (su_stats), then "E". */
 void profiler_task(ring_t* r)
 {
 	if (rep_pos < 0)
@@ -160,11 +160,11 @@ void profiler_task(ring_t* r)
 			  put_num(r, 'L', i, late[i]);
 			late[i] = 0;
 		}
-		else if (rep_pos <= NBUCKETS + NLATE + SU_TX_STATS)
+		else if (rep_pos <= NBUCKETS + NLATE + SU_STATS)
 		{
 			uint8_t i = rep_pos - 1 - NBUCKETS - NLATE;
-			put_num(r, 'S', i, su_tx_stats[i]);
-			su_tx_stats[i] = 0;
+			put_num(r, 'S', i, su_stats[i]);
+			su_stats[i] = 0;
 		}
 		else
 		{

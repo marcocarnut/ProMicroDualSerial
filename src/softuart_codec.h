@@ -124,8 +124,8 @@ void su_enc_reset(su_enc_t* e);
 
 /* Host only (tests): encodes 'data' into the ring 'q' at byte offset 'head'
  * (room for SU_MAX_EDGES entries is the caller's business) and returns the
- * new head. Frame lengths alternate between rounding down and up so that back to back
- * frames keep the exact average rate. */
+ * new head. Frame lengths alternate between rounding down and up so that
+ * back to back frames keep the exact average rate. */
 uint8_t su_encode(const su_cfg_t* c, su_enc_t* e, uint8_t data, uint8_t* q, uint8_t head);
 
 void su_dec_reset(su_dec_t* d, uint8_t level);

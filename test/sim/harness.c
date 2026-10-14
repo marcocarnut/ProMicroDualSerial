@@ -333,7 +333,7 @@ int main(int argc, char** argv)
 		int state = avr_run(avr);
 		static int qstat = -1;
 		static unsigned qs_qhead, qs_ring;
-		static uint64_t qs_next, qs_hist[3][4][2];
+		static uint64_t qs_next, qs_hist[2][4][2];
 		if (qstat < 0)
 		  qstat = getenv("QSTAT") && sscanf(getenv("QSTAT"), "%x,%x", &qs_qhead, &qs_ring) == 2;
 		if (qstat && fed < count && avr->cycle >= 300000 && avr->cycle >= qs_next)
@@ -341,14 +341,14 @@ int main(int argc, char** argv)
 			qs_next = avr->cycle + 500;
 			uint8_t qt = avr->data[0x4A], qh = avr->data[qs_qhead & 0xFFFF];
 			/* running or stopped; queue of 2-byte frame words */
-			int st = !(avr->data[0x71] & 2) ? 2 : 0;
+			int st = !(avr->data[0x71] & 2);
 			int q  = (uint8_t)(qh - qt) / 2;
 			int qb = q == 0 ? 0 : q < 12 ? 1 : q < 40 ? 2 : 3;
 			int rb = (uint8_t)(avr->data[qs_ring & 0xFFFF] - avr->data[(qs_ring & 0xFFFF) + 1]) != 0;
 			qs_hist[st][qb][rb]++;
 			/* where the CPU is while the transmitter starves */
 			static FILE* qpc;
-			if (st == 2 && q == 0 && rb && getenv("QSTAT_PC"))
+			if (st == 1 && q == 0 && rb && getenv("QSTAT_PC"))
 			{
 				if (!qpc) qpc = fopen(getenv("QSTAT_PC"), "w");
 				fprintf(qpc, "%x\n", avr->pc);
@@ -356,12 +356,12 @@ int main(int argc, char** argv)
 		}
 		if (qstat && fed == count && avr->cycle >= end && (!rxgen || avr->cycle > 250000 + rx_nsent * frame + 100000))
 		{
-			static const char* sn[] = { "RUN", "NOTHING", "STOPPED" };
+			static const char* sn[] = { "RUN", "STOPPED" };
 			static const char* qn[] = { "q=0", "q1-11", "q12-39", "q40+" };
 			uint64_t tot = 0;
-			for (int a = 0; a < 3; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) tot += qs_hist[a][b][c];
+			for (int a = 0; a < 2; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 2; c++) tot += qs_hist[a][b][c];
 			printf("qstat (%% of samples; queue entries, tx ring empty / not):\n");
-			for (int a = 0; a < 3; a++) for (int b = 0; b < 4; b++)
+			for (int a = 0; a < 2; a++) for (int b = 0; b < 4; b++)
 			  if (qs_hist[a][b][0] + qs_hist[a][b][1])
 			    printf("  %-5s %-6s  ring empty %5.1f%%  ring data %5.1f%%\n", sn[a], qn[b],
 			           100.0 * qs_hist[a][b][0] / tot, 100.0 * qs_hist[a][b][1] / tot);

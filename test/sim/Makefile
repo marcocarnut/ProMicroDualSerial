@@ -1,6 +1,6 @@
 # Cycle-level simulation test of the soft UART with simavr: the real
 # firmware drivers (asm ISRs included) run in a simulated ATmega32U4 with
-# the soft UART's TX looped back into its RX.
+# the soft UART's TX looped back into its RX (or RX driven by a generator).
 #
 # Needs a recent simavr built from source. 1.6, as packaged by Debian/Ubuntu,
 # models Timer1's compare output and multiple pending interrupts wrongly;

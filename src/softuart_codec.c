@@ -3,8 +3,9 @@
  */
 #include "softuart_codec.h"
 
-/* Frame classification runs once per received frame; -Os makes the C
- * decoder (the reference for the asm one) spill its state on every edge. */
+/* On the AVR, su_dec_finish_frame() runs once per received frame, and the
+ * C decoder (only built for testing the asm one) would spill its state on
+ * every edge at -Os. */
 #if defined(__AVR__)
 #pragma GCC optimize ("O2")
 #endif
