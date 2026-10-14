@@ -247,6 +247,16 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 
 /* ------------------------------------------------------------------------ */
 
+/* Frames queued ahead of the transmitter: enough to ride out a long main
+ * loop iteration, and no more, because the gate above only holds off new
+ * frames. Queued ones still go out, and while received edges pile up the
+ * edge ring lasts ~12 frames (0x55 in 8N1, an edge every bit). With the
+ * whole queue (127 frames) a TX burst queued during an RX pause overran it
+ * once RX resumed. */
+#ifndef TXQ_MAX
+#define TXQ_MAX 8
+#endif
+
 #if PROFILER
 /* why encoding stopped, per call (see profiler.h) */
 volatile uint16_t su_tx_stats[SU_TX_STATS];
@@ -364,7 +374,7 @@ static void softuart_tx_start(void)
 	{
 		uint8_t h = su_txw_head;
 		if (ring_empty(&tx_ring))            { TX_STAT(3); break; }
-		if ((uint8_t)(h + 2) == TXW_TAIL)    { TX_STAT(4); break; }
+		if ((uint8_t)(h - TXW_TAIL) >= 2 * TXQ_MAX) { TX_STAT(4); break; }
 		if (PROFILER && i == n - 1 && ring_count(&tx_ring) > 1)
 		  TX_STAT(2);
 		uint16_t w = tx_word(ring_get(&tx_ring));
