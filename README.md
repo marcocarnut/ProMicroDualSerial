@@ -125,6 +125,12 @@ bootloader. Set it to 0 to turn that off.
   6 -> 14) and run `tools/loopback_test.py`. It sends data both ways
   through both UARTs at once for many line codings, and checks the error
   counters, breaks, flow control and the modem lines.
+* `tools/burst_test.py` on the same rig sends bursty traffic both ways, the
+  way PPP carrying TCP does (chunks with gaps between them), and checks
+  every byte and the error counters. `--fill 0x55` makes it the soft
+  UART's worst case. Bursts catch problems that steady streams don't: the
+  transmitter queueing up frames while the receiver is idle, then
+  competing with it once data arrives again.
 * Profiling on the board: `make clean && make EXTRA=-DPROFILER=1`, flash,
   then `tools/fwprofile.py --mode both` (add `--fill 0x55` for the worst
   case) runs full duplex traffic over the loopback rig and prints where the
@@ -194,7 +200,9 @@ time):
 | 115200, full duplex loopback, 0x55 (worst case)  | ~85% (every bit boundary is an edge) |
 | 230400, RX continuous                            | beyond the CPU: bursts only          |
 
-## Credits
+## License
+
+GNU General Public License, version 2: see `LICENSE`.
 
 The USB descriptors are based on LUFA's DualVirtualSerial demo (Copyright
 2021 Dean Camera, MIT-style license). LUFA itself is included as a git
