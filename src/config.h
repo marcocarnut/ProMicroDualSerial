@@ -4,6 +4,15 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* ---- Board -------------------------------------------------------------
+ * 0: SparkFun Pro Micro (and clones). 1: "Beetle" (DFRobot style, USB-A
+ * plug), which breaks out fewer pins: port 1 moves to A0 (RX) / D10 (TX),
+ * and there are no modem lines. Selected with make BOARD_BEETLE=1 (after a
+ * make clean). */
+#ifndef BOARD_BEETLE
+#define BOARD_BEETLE               0
+#endif
+
 /* ---- USB identity ------------------------------------------------------
  * 03EB:204E is the VID/PID LUFA uses for its dual CDC demo. Fine for
  * personal use; get your own (e.g. from pid.codes) before distributing. */
@@ -40,6 +49,8 @@
  * have the internal pull-up enabled, so an unconnected input reads as
  * deasserted.
  *
+ * Pro Micro:
+ *
  *            Port 0 (ttyACM0)     Port 1 (ttyACM1)
  *   RTS out  F,4  (A3)            F,6  (A1)
  *   CTS in   F,5  (A2)            F,7  (A0)
@@ -47,7 +58,33 @@
  *   DSR in   B,3  (14)            B,5  (9)
  *   DCD in   B,2  (16)            E,6  (7)
  *   RI  in   B,6  (10)            B,4  (8)
+ *
+ * Beetle (TX/RX: port 0 on TX/RX, port 1 on D10/A0):
+ *
+ *            Port 0 (ttyACM0)     Port 1 (ttyACM1)
+ *   RTS out  D,0  (SCL)           F,6  (A1)
+ *   CTS in   D,1  (SDA)           F,5  (A2)
+ *
+ * It has no modem lines (MODEM_LINES is 0); their pins below only keep the
+ * code compiling. D9, D11, MI, MO and SCK are left free.
  */
+#if BOARD_BEETLE
+#define P0_RTS_PIN   D,0
+#define P0_CTS_PIN   D,1
+#define P1_RTS_PIN   F,6
+#define P1_CTS_PIN   F,5
+#define P0_DTR_PIN   B,5
+#define P0_DSR_PIN   B,7
+#define P0_DCD_PIN   B,7
+#define P0_RI_PIN    B,7
+#define P1_DTR_PIN   B,5
+#define P1_DSR_PIN   B,7
+#define P1_DCD_PIN   B,7
+#define P1_RI_PIN    B,7
+#ifndef MODEM_LINES
+#define MODEM_LINES  0
+#endif
+#else
 #define P0_RTS_PIN   F,4
 #define P0_CTS_PIN   F,5
 #define P0_DTR_PIN   B,1
@@ -60,6 +97,7 @@
 #define P1_DSR_PIN   B,5
 #define P1_DCD_PIN   E,6
 #define P1_RI_PIN    B,4
+#endif
 
 /* Hardware (RTS/CTS) flow control, per port. CDC-ACM has no request to
  * switch it at run time (the host's CRTSCTS setting never reaches the

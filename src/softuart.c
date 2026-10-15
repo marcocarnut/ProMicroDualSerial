@@ -22,6 +22,11 @@
  *     edge stream into bytes by sampling each bit in its middle
  *     (softuart_dec.S).
  *
+ * Beetle build (BOARD_BEETLE): PD4 and PC6 aren't broken out there, so TX
+ * moves to Timer4's OC4B (PB6, D10) and RX to the analog comparator on A0
+ * driving Timer1's input capture; see the pin definitions below. The
+ * ISRs and the timing are the same.
+ *
  * CTS flow control (P1_HW_FLOW) is checked by the TX ISR when it is about
  * to start a frame, so a frame in progress always completes.
  *
@@ -63,16 +68,52 @@
 #error the soft UART ISRs need r2-r7 reserved (-ffixed-r2 ... -ffixed-r7, see the Makefile)
 #endif
 
+#if BOARD_BEETLE
+/* RX on A0 (PF7 = ADC7): the analog comparator, with the 1.1 V bandgap on
+ * its + input and ADC7 on its - input through the ADC multiplexer, drives
+ * Timer1's input capture instead of ICP1 (PD4), which the Beetle doesn't
+ * break out. Its output is high while the line is low, so captured edge
+ * polarities are inverted. */
+#define RX_PORT    PORTF
+#define RX_BIT     PF7
+#define RX_ADC_CH  7
+#define RX_INV     1
+#define RX_LEVEL() ((ACSR & _BV(ACO)) ? 0 : 1)
+
+/* TX on D10 (PB6 = OC4B): Timer4 in normal mode with TOP = OCR4C acts like
+ * Timer3's CTC mode. Its COM bits live in TCCR4A along with the force bit. */
+#define TX_PORT    PORTB
+#define TX_DDR     DDRB
+#define TX_BIT     PB6
+#define TX_TCCRA   TCCR4A
+#define TX_TIMSK   TIMSK4
+#define TX_OCIE    OCIE4B
+#define TX_VECT    TIMER4_COMPB_vect
+#define COM_SET    (_BV(COM4B1) | _BV(COM4B0))
+#define COM_CLEAR  _BV(COM4B1)
+#define COM_BIT    COM4B0            /* COM_CLEAR with this bit set = COM_SET */
+#define TX_FORCE(com) (TCCR4A = (com) | _BV(FOC4B))
+#else
 #define RX_PORT    PORTD
 #define RX_PIN     PIND
 #define RX_BIT     PD4
+#define RX_INV     0
+#define RX_LEVEL() ((RX_PIN >> RX_BIT) & 1)
+
 #define TX_PORT    PORTC
 #define TX_DDR     DDRC
 #define TX_BIT     PC6
+#define TX_TCCRA   TCCR3A
+#define TX_TIMSK   TIMSK3
+#define TX_OCIE    OCIE3A
+#define TX_VECT    TIMER3_COMPA_vect
 
 /* TCCR3A values: OC3A set (line high) / cleared (line low) on match */
 #define COM_SET    (_BV(COM3A1) | _BV(COM3A0))
 #define COM_CLEAR  _BV(COM3A1)
+#define COM_BIT    COM3A0            /* COM_CLEAR with this bit set = COM_SET */
+#define TX_FORCE(com) do { TCCR3A = (com); TCCR3C = _BV(FOC3A); } while (0)
+#endif
 
 /* debugging hook for the simulator: marks decoder runs */
 #ifndef SU_TRACE_DECODE
@@ -109,7 +150,8 @@ static su_dec_t         dec;
  * -ffixed for them):
  *   r3:r2  TX: frame word being sent, next bit in bit 0
  *   r4     TX: bits of it left to program
- *   r5     TX: TCCR3A value, COM_CLEAR with bit 6 set from the frame word
+ *   r5     TX: TCCR3A / TCCR4A value, COM_CLEAR with COM_BIT set from the
+ *          frame word
  *   r6     SREG, saved by either ISR (neither can interrupt the other)
  *   r7     capture ISR: data register */
 
@@ -177,13 +219,13 @@ ISR(TIMER1_CAPT_vect, ISR_NAKED)
 }
 
 
-ISR(TIMER3_COMPA_vect, ISR_NAKED)
+ISR(TX_VECT, ISR_NAKED)
 {
 	asm volatile(
 		"in   r6, __SREG__"         "\n\t"
 		"bst  r2, 0"                "\n\t"
-		"bld  r5, 6"                "\n\t"   /* COM_CLEAR or COM_SET */
-		"sts  %[tccr3a], r5"        "\n\t"
+		"bld  r5, %[combit]"        "\n\t"   /* COM_CLEAR or COM_SET */
+		"sts  %[tccra], r5"         "\n\t"
 		"lsr  r3"                   "\n\t"
 		"ror  r2"                   "\n\t"
 		"dec  r4"                   "\n\t"
@@ -225,14 +267,15 @@ ISR(TIMER3_COMPA_vect, ISR_NAKED)
 	"4:"	"ldi  r30, 1"               "\n\t"
 		"mov  r2, r30"              "\n\t"
 		"mov  r4, r30"              "\n\t"
-		"lds  r30, %[timsk3]"       "\n\t"
+		"lds  r30, %[timsk]"        "\n\t"
 		"andi r30, ~%[ocie]"        "\n\t"
-		"sts  %[timsk3], r30"       "\n\t"
+		"sts  %[timsk], r30"        "\n\t"
 		"rjmp 3b"                   "\n\t"
 		::
-		[tccr3a]   "n" (_SFR_MEM_ADDR(TCCR3A)),
-		[timsk3]   "n" (_SFR_MEM_ADDR(TIMSK3)),
-		[ocie]     "M" (_BV(OCIE3A)),
+		[tccra]    "n" (_SFR_MEM_ADDR(TX_TCCRA)),
+		[combit]   "I" (COM_BIT),
+		[timsk]    "n" (_SFR_MEM_ADDR(TX_TIMSK)),
+		[ocie]     "M" (_BV(TX_OCIE)),
 		[tail]     "I" (_SFR_IO_ADDR(TXW_TAIL)),
 		[head]     "i" (&su_txw_head),
 		[fbits]    "i" (&su_tx_fbits),
@@ -296,9 +339,10 @@ static void rx_task(void)
 	  goto check_overrun;
 
 	/* Captures alternate in polarity, and ICES1 is set up for the one after
-	 * the newest: if it waits for a rising edge, the newest was falling.
+	 * the newest: if it waits for a rising edge, the newest was falling
+	 * (the other way round with the comparator, RX_INV).
 	 * Work back from there to the level after the oldest unprocessed one. */
-	uint8_t level = (tccr1b & _BV(ICES1)) ? 0 : 1;
+	uint8_t level = ((tccr1b & _BV(ICES1)) ? 0 : 1) ^ RX_INV;
 	if (!(((uint8_t)(head - t) / 2) & 1))
 	  level ^= 1;
 
@@ -387,17 +431,17 @@ static void softuart_tx_start(void)
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
 		/* (the ISR stops itself when it finds nothing to start) */
-		if (!(TIMSK3 & _BV(OCIE3A)) && TXW_TAIL != su_txw_head && !CTS_BLOCKED())
+		if (!(TX_TIMSK & _BV(TX_OCIE)) && TXW_TAIL != su_txw_head && !CTS_BLOCKED())
 		{
 			SU_STAT(5);
-			TIMSK3 |= _BV(OCIE3A);
+			TX_TIMSK |= _BV(TX_OCIE);
 		}
 	}
 }
 
 static bool softuart_tx_idle(void)
 {
-	if (TIMSK3 & _BV(OCIE3A))
+	if (TX_TIMSK & _BV(TX_OCIE))
 	  return false;
 	return (TXW_TAIL == su_txw_head && ring_empty(&tx_ring)) || CTS_BLOCKED();
 }
@@ -406,12 +450,22 @@ static void softuart_set_break(bool on)
 {
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
-		TCCR3A = on ? COM_CLEAR : COM_SET;
-		TCCR3C = _BV(FOC3A);
+		TX_FORCE(on ? COM_CLEAR : COM_SET);
 	}
 }
 
 static const uint16_t prescalers[] = { 1, 8, 64, 256, 1024 };
+
+#if BOARD_BEETLE
+/* Timer4: clk / 2^cs, cs = 0..14 (CS4 = cs + 1), 10-bit OCR4C */
+#define TX_NCS        15
+#define TX_PERIOD_MAX 1023
+#define tx_clock(cs)  (F_CPU >> (cs))
+#else
+#define TX_NCS        5
+#define TX_PERIOD_MAX 65535
+#define tx_clock(cs)  (F_CPU / prescalers[cs])
+#endif
 
 static uint32_t clamp_baud(uint32_t baud)
 {
@@ -424,23 +478,23 @@ static uint32_t clamp_baud(uint32_t baud)
 	return baud;
 }
 
-/* Timer3 (TX): one bit per period, the smallest prescaler that fits */
-static uint16_t tx_period(uint32_t baud, uint8_t* cs3_out)
+/* TX timer: one bit per period, the smallest prescaler that fits */
+static uint16_t tx_period(uint32_t baud, uint8_t* cs_out)
 {
-	uint8_t cs3 = 0;
-	while (cs3 < 4 && F_CPU / prescalers[cs3] / baud > 65535)
-	  cs3++;
-	*cs3_out = cs3;
-	return (F_CPU / prescalers[cs3] + baud / 2) / baud;
+	uint8_t cs = 0;
+	while (cs < TX_NCS - 1 && tx_clock(cs) / baud > TX_PERIOD_MAX)
+	  cs++;
+	*cs_out = cs;
+	return (tx_clock(cs) + baud / 2) / baud;
 }
 
 /* The rate reported is the TX one: whole timer ticks per bit. RX samples at
  * the clamped rate itself; the two differ by less than 0.1%. */
 static void softuart_effective(CDC_LineEncoding_t* le)
 {
-	uint8_t  cs3;
-	uint16_t period = tx_period(clamp_baud(le->BaudRateBPS), &cs3);
-	uint32_t hz     = F_CPU / prescalers[cs3];
+	uint8_t  cs_tx;
+	uint16_t period = tx_period(clamp_baud(le->BaudRateBPS), &cs_tx);
+	uint32_t hz     = tx_clock(cs_tx);
 	le->BaudRateBPS = (hz + period / 2) / period;
 	if (le->DataBits < 5 || le->DataBits > 8)
 	  le->DataBits = 8;
@@ -461,29 +515,46 @@ static void softuart_configure(const CDC_LineEncoding_t* le)
 
 	su_cfg_init(&cfg, F_CPU / prescalers[cs], baud, le->DataBits, le->ParityType, le->CharFormat);
 
-	uint8_t  cs3;
-	uint16_t period = tx_period(baud, &cs3);
+	uint8_t  cs_tx;
+	uint16_t period = tx_period(baud, &cs_tx);
 	/* 1.5 stop bits are sent as 2 */
 	uint8_t fbits = 1 + cfg.data_bits + (cfg.parity != SU_PARITY_NONE) + (le->CharFormat ? 2 : 1);
 
 	ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 	{
-		uint8_t line = (RX_PIN >> RX_BIT) & 1;
+		uint8_t line = RX_LEVEL();
 
-		TIMSK3 &= ~_BV(OCIE3A);
+		TX_TIMSK &= ~_BV(TX_OCIE);
 		TXW_TAIL    = su_txw_head;
 		su_tx_fbits = fbits;
 		tx_isr_idle();
+#if BOARD_BEETLE
+		/* normal mode, TOP = OCR4C, compare B at TOP like Timer3's CTC.
+		 * TCCR4C holds shadow copies of TCCR4A's COM bits: written first. */
+		TCCR4B = 0;
+		TCCR4C = 0;
+		TCCR4D = 0;
+		TCCR4E = 0;
+		TC4H   = 0;
+		TCNT4  = 0;
+		TC4H   = (period - 1) >> 8;
+		OCR4C  = (uint8_t)(period - 1);
+		TC4H   = (period - 1) >> 8;
+		OCR4B  = (uint8_t)(period - 1);
+		TC4H   = 0;
+		TX_FORCE(COM_SET);
+		TCCR4B = cs_tx + 1;
+#else
 		TCCR3B = 0;
 		TCNT3  = 0;
 		OCR3A  = period - 1;
-		TCCR3A = COM_SET;
-		TCCR3C = _BV(FOC3A);
-		TCCR3B = _BV(WGM32) | (cs3 + 1);
+		TX_FORCE(COM_SET);
+		TCCR3B = _BV(WGM32) | (cs_tx + 1);
+#endif
 		ring_flush(&tx_ring);
 
 		/* capture the next edge: falling if the line is high now */
-		TCCR1B = _BV(ICNC1) | (line ? 0 : _BV(ICES1)) | (cs + 1);
+		TCCR1B = _BV(ICNC1) | ((line ^ RX_INV) ? 0 : _BV(ICES1)) | (cs + 1);
 		TIFR1  = _BV(ICF1);
 		su_e_tail = E_HEAD;
 		su_dec_reset(&dec, line);
@@ -508,12 +579,17 @@ void softuart_init(void)
 	TX_PORT |= _BV(TX_BIT);
 	TX_DDR  |= _BV(TX_BIT);
 	RX_PORT |= _BV(RX_BIT);          /* pull-up on RX */
+#if BOARD_BEETLE
+	ADCSRA &= ~_BV(ADEN);            /* the multiplexer serves the comparator */
+	ADCSRB |= _BV(ACME);
+	ADMUX   = RX_ADC_CH;
+	ACSR    = _BV(ACBG) | _BV(ACIC);
+#endif
 
 	GPIOR0 = 0;
 	TCCR1A = 0;
 	tx_isr_idle();
-	TCCR3A = COM_SET;
-	TCCR3C = _BV(FOC3A);             /* OC3A high: line idle */
+	TX_FORCE(COM_SET);               /* TX high: line idle */
 	TIMSK1 = _BV(ICIE1);
 
 	static const CDC_LineEncoding_t def =

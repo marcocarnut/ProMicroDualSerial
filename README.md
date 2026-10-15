@@ -57,6 +57,25 @@ deasserted.
 The soft UART's TX and RX pins are fixed by the timers it uses. The
 handshake and modem pins can be moved in `src/config.h`.
 
+### Beetle variant (untested)
+
+`make clean && make BOARD_BEETLE=1` builds for the "Beetle" (DFRobot
+style ATmega32U4 board with a USB-A plug), which breaks out fewer pins.
+The soft UART's usual pins (PD4, PC6) aren't on it, so port 1 uses Timer4
+for TX and the analog comparator for RX instead (the comparator drives
+Timer1's input capture, threshold 1.1 V). Bit timing is still done by the
+timers, with the same interrupt handlers. There are no modem lines.
+
+| Signal | Port 0 (ttyACM0, USART1) | Port 1 (ttyACM1, soft UART) | Direction |
+|--------|--------------------------|-----------------------------|-----------|
+| TX     | TX (PD3)                 | D10 (PB6, OC4B)             | out       |
+| RX     | RX (PD2)                 | A0 (PF7, comparator)        | in        |
+| RTS    | SCL (PD0)                | A1 (PF6)                    | out       |
+| CTS    | SDA (PD1)                | A2 (PF5)                    | in        |
+
+D9, D11, MI, MO and SCK are left free. This build has not been run on a
+Beetle yet, and the simulator doesn't model Timer4.
+
 ## Building and flashing
 
 Needs `avr-gcc`, `avr-libc`, `avrdude` and `make`.

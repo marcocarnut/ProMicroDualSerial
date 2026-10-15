@@ -21,6 +21,11 @@ CC_FLAGS     = -DUSE_LUFA_CONFIG_HEADER -IConfig/ -Isrc/ -Wextra -Wno-unused-par
 # padding; .data and .bss follow them.
 LD_FLAGS     = -Wl,--section-start=.noinit=0x800100 -Wl,-Tdata=0x800300
 
+# make BOARD_BEETLE=1: build for the Beetle board (see src/config.h)
+ifdef BOARD_BEETLE
+CC_FLAGS    += -DBOARD_BEETLE=$(BOARD_BEETLE)
+endif
+
 # extra compiler flags, e.g. make clean && make EXTRA=-DTX_ENCODE_BATCH=2
 CC_FLAGS    += $(EXTRA)
 
