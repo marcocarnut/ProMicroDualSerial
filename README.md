@@ -208,7 +208,8 @@ time):
 
 ## License
 
-GNU General Public License, version 2: see `LICENSE`.
+GNU General Public License, version 2 only (SPDX: `GPL-2.0-only`): see
+`LICENSE`.
 
 The USB descriptors are based on LUFA's DualVirtualSerial demo (Copyright
 2021 Dean Camera, MIT-style license). LUFA itself is included as a git
