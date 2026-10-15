@@ -74,7 +74,11 @@ timers, with the same interrupt handlers. There are no modem lines.
 | CTS    | SDA (PD1)                | A2 (PF5)                    | in        |
 
 D9, D11, MI, MO and SCK are left free. This build has not been run on a
-Beetle yet, and the simulator doesn't model Timer4.
+Beetle yet; it passes the simulator tests (the `beetle_` cases, which
+need the `fixes` branch of simavr for Timer4). The simulator doesn't model
+the comparator's analog behaviour: its threshold is 1.1 V with no
+hysteresis, fine for a MAX232's TTL output but not for slow or noisy
+edges.
 
 ## Building and flashing
 

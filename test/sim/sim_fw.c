@@ -1,14 +1,16 @@
 /*
  * Firmware for the simavr test (no USB): bytes received on USART1 are sent
  * out of the soft UART, and bytes received by the soft UART are sent out of
- * USART1. The harness wires soft TX (PC6) back to soft RX (PD4), so every
- * byte fed into USART1 should come back out of it, having gone through the
- * soft UART's TX ISR, capture ISR and decoder.
+ * USART1. The harness wires soft TX (PC6) back to soft RX (PD4), or on the
+ * Beetle D10 (PB6) to the comparator on A0 (ADC7), so every byte fed into
+ * USART1 should come back out of it, having gone through the soft UART's
+ * TX ISR, capture ISR and decoder.
  *
  * Error flags are latched on port D/E pins for the harness to see. The soft
  * UART is built with automatic CTS flow control (P1_HW_FLOW = FLOW_AUTO,
- * CTS on PF7): the harness asserts CTS after boot, which arms it, and
- * toggles it in the CTS cases (or never asserts it, with CTS_NEVER).
+ * CTS on PF7, PF5 on the Beetle): the harness asserts CTS after boot, which
+ * arms it, and toggles it in the CTS cases (or never asserts it, with
+ * CTS_NEVER).
  */
 #include <avr/io.h>
 #include <avr/interrupt.h>
@@ -16,6 +18,27 @@
 #include "clock.h"
 #include "hwuart.h"
 #include "softuart.h"
+#include "config.h"
+
+/* Beetle build: PB6 is soft TX and PF7 soft RX there, so the loop tick
+ * moves to PC7 and CTS to PF5 (as in config.h) */
+#if BOARD_BEETLE
+#define TICK_PORT PORTC
+#define TICK_PIN  PINC
+#define TICK_DDR  DDRC
+#define TICK_BIT  PC7
+#define CTS_PORT  PORTF
+#define CTS_PIN   PINF
+#define CTS_BIT   PF5
+#else
+#define TICK_PORT PORTB
+#define TICK_PIN  PINB
+#define TICK_DDR  DDRB
+#define TICK_BIT  PB6
+#define CTS_PORT  PORTF
+#define CTS_PIN   PINF
+#define CTS_BIT   PF7
+#endif
 
 #ifndef SOFT_BAUD
 #define SOFT_BAUD 115200
@@ -43,7 +66,7 @@ int main(void)
 {
 	DDRD |= _BV(PD0) | _BV(PD1) | _BV(PD5) | _BV(PD6) | _BV(PD7);
 	DDRE |= _BV(PE6);
-	PORTF |= _BV(PF7);        /* CTS input pull-up */
+	CTS_PORT |= _BV(CTS_BIT); /* CTS input pull-up */
 
 	clock_init();
 	hwuart_init();
@@ -56,10 +79,11 @@ int main(void)
 	softuart_port.configure(&sw);
 	sei();
 
-	DDRB |= _BV(PB6) | _BV(PB4);
+	DDRB |= _BV(PB4);
+	TICK_DDR |= _BV(TICK_BIT);
 	for (;;)
 	{
-		PINB = _BV(PB6);    /* toggles: one edge per main loop iteration */
+		TICK_PIN = _BV(TICK_BIT);   /* toggles: one edge per main loop iteration */
 		clock_ticks();
 		hwuart_port.task();
 		softuart_port.task();
@@ -77,7 +101,7 @@ int main(void)
 		  PORTB &= ~_BV(PB4);
 
 		/* FLOW_AUTO arming as the bridge does it (the port counts as open) */
-		if (!(PINF & _BV(PF7)))
+		if (!(CTS_PIN & _BV(CTS_BIT)))
 		  softuart_port.cts_arm(true);
 
 		uint8_t serr, herr;

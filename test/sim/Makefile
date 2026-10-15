@@ -5,9 +5,10 @@
 # Needs a recent simavr built from source. 1.6, as packaged by Debian/Ubuntu,
 # models Timer1's compare output and multiple pending interrupts wrongly;
 # upstream master still fires a compare at OCR1x <= ~2 right after an
-# overflow one period late (rare, but this suite hits it). Recommended: the
-# "fixes" branch below, which has that fixed and also charges the 4 cycles
-# of interrupt entry like the silicon does:
+# overflow one period late (rare, but this suite hits it), and has no
+# Timer4 (the beetle_ cases). Recommended: the "fixes" branch below, which
+# has those, charges the 4 cycles of interrupt entry like the silicon does,
+# and disconnects ICP1 while the comparator drives input capture:
 #   git clone -b fixes https://github.com/marcocarnut/simavr
 #   make -C simavr/simavr libsimavr
 #   make -j SIMAVR_INC=simavr/simavr/sim \
@@ -33,6 +34,8 @@ FW_SRC   = sim_fw.c $(SRC)/hwuart.c $(SRC)/softuart.c $(SRC)/softuart_codec.c $(
 # firmware's "ready" pin standing in for USB flow control). With RXGEN=1 an
 # independent full-rate stream drives the soft RX pin instead of looping TX
 # back, so RX has to keep up at 100% while TX gets what CPU is left.
+# BEETLE=1 cases run the Beetle build (BOARD_BEETLE=1): TX on Timer4's
+# OC4B, RX into the analog comparator.
 
 CASES = \
 	115200_8N1_random:115200:8:0:0:random:2000 \
@@ -57,7 +60,15 @@ CASES = \
 	rxgen_117647_8O1_random:115200:8:1:0:random:3000:RXGEN=1,RXGEN_BAUD=117647 \
 	cts_115200_8N1_random:115200:8:0:0:random:2000:CTS_TOGGLE=1 \
 	cts_9600_8E2_random:9600:8:2:2:random:300:CTS_TOGGLE=1 \
-	cts_unconnected_115200:115200:8:0:0:random:1000:CTS_NEVER=1
+	cts_unconnected_115200:115200:8:0:0:random:1000:CTS_NEVER=1 \
+	beetle_115200_8N1_random:115200:8:0:0:random:2000:BEETLE=1 \
+	beetle_115200_8N1_55:115200:8:0:0:55:2000:BEETLE=1 \
+	beetle_115200_8O2_random:115200:8:1:2:random:1000:BEETLE=1 \
+	beetle_38400_5S15_random:38400:5:4:1:random:1000:BEETLE=1 \
+	beetle_300_7O2_random:300:7:1:2:random:30:BEETLE=1 \
+	beetle_rxgen_115200_8N1_55:115200:8:0:0:55:3000:BEETLE=1,RXGEN=1 \
+	beetle_rxgen_117647_8O1_random:115200:8:1:0:random:3000:BEETLE=1,RXGEN=1,RXGEN_BAUD=117647 \
+	beetle_cts_115200_8N1_random:115200:8:0:0:random:2000:BEETLE=1,CTS_TOGGLE=1
 
 all: run
 
@@ -65,13 +76,13 @@ $(BUILD)/harness: harness.c
 	@mkdir -p $(BUILD)
 	$(CC) -O2 -Wall -I$(SIMAVR_INC) -o $@ $< $(SIMAVR_LIB) -lm
 
-# one firmware per line coding
+# one firmware per line coding (BEETLE=1 cases: built for the Beetle board)
 define fw_rule
 $(BUILD)/fw_$(1).elf: $(FW_SRC) $(wildcard $(SRC)/*.h)
 	@mkdir -p $(BUILD)
-	avr-gcc $(MCUFLAGS) -DSOFT_BAUD=$(2) -DSOFT_BITS=$(3) -DSOFT_PARITY=$(4) -DSOFT_STOP=$(5) -o $$@ $(FW_SRC)
+	avr-gcc $(MCUFLAGS) $(if $(findstring BEETLE=1,$(6)),-DBOARD_BEETLE=1) -DSOFT_BAUD=$(2) -DSOFT_BITS=$(3) -DSOFT_PARITY=$(4) -DSOFT_STOP=$(5) -o $$@ $(FW_SRC)
 endef
-$(foreach c,$(CASES),$(eval $(call fw_rule,$(word 1,$(subst :, ,$(c))),$(word 2,$(subst :, ,$(c))),$(word 3,$(subst :, ,$(c))),$(word 4,$(subst :, ,$(c))),$(word 5,$(subst :, ,$(c))))))
+$(foreach c,$(CASES),$(eval $(call fw_rule,$(word 1,$(subst :, ,$(c))),$(word 2,$(subst :, ,$(c))),$(word 3,$(subst :, ,$(c))),$(word 4,$(subst :, ,$(c))),$(word 5,$(subst :, ,$(c))),$(word 8,$(subst :, ,$(c))))))
 
 comma := ,
 

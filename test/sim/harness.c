@@ -17,6 +17,9 @@
  *   QSTAT=qhead,txring  (data addresses of su_txw_head and softuart.c's
  *                 tx_ring, from avr-nm) sample the soft transmitter's
  *                 state, queue and tx ring every 500 cycles
+ *   BEETLE=1      firmware built with BOARD_BEETLE=1: TX is Timer4's OC4B,
+ *                 RX is driven into the analog comparator (ADC7, in mV),
+ *                 CTS is PF5 and the loop tick PC7
  *   TRACE=1, DUMP=n, OCDEBUG=n, STATE=1, GAPS=n: debugging aids
  */
 #include <stdio.h>
@@ -29,6 +32,7 @@
 #include "avr_ioport.h"
 #include "avr_uart.h"
 #include "avr_timer.h"
+#include "avr_acomp.h"
 #include "sim_cycle_timers.h"
 #include "sim_interrupts.h"
 #include <stdint.h>
@@ -36,7 +40,13 @@
 #define F_CPU 16000000.0
 
 static avr_t*     avr;
-static avr_irq_t* pd4;
+static avr_irq_t* pd4;          /* soft RX: ICP1 pin, or ADC7 into the comparator */
+static int        beetle;
+
+static void rx_drive(int v)
+{
+	avr_raise_irq(pd4, beetle ? (v ? 5000 : 0) : v);
+}
 
 static uint8_t  sent[100000];
 static int      nsent;
@@ -82,6 +92,7 @@ static int      nedges;
  * with newer simavr.
  */
 #define TCCR3A_ADDR 0x90
+#define TCCR4A_ADDR 0xC0
 static int txline = 1;
 
 /*
@@ -95,13 +106,13 @@ static avr_cycle_count_t loop_cb(struct avr_t* a, avr_cycle_count_t when, void* 
 {
 	logf_("%10llu  RX pin -> %d (ICR1 was %u, TCCR1B %02x)", (unsigned long long)avr->cycle, (int)(intptr_t)param,
 	      avr->data[0x86] | (avr->data[0x87] << 8), avr->data[0x81]);
-	avr_raise_irq(pd4, (int)(intptr_t)param);
+	rx_drive((int)(intptr_t)param);
 	return 0;
 }
 
 static void oc3a_changed(struct avr_irq_t* irq, uint32_t value, void* param)
 {
-	int mode = (avr->data[TCCR3A_ADDR] >> 6) & 3;
+	int mode = beetle ? (avr->data[TCCR4A_ADDR] >> 4) & 3 : (avr->data[TCCR3A_ADDR] >> 6) & 3;
 	int v    = value & 1;
 	static int dbg = -1;
 	static uint64_t dbg_from;
@@ -163,7 +174,7 @@ static int       gen_n, gen_i;
 
 static avr_cycle_count_t gen_cb(struct avr_t* a, avr_cycle_count_t when, void* param)
 {
-	avr_raise_irq(pd4, gen_v[gen_i]);
+	rx_drive(gen_v[gen_i]);
 	gen_i++;
 	return gen_i < gen_n ? gen_t[gen_i] : 0;
 }
@@ -220,12 +231,16 @@ int main(int argc, char** argv)
 	avr->frequency = (uint32_t)F_CPU;
 	avr->log = 0;
 
-	pd4 = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('D'), 4);
-	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 6), loop_tick, NULL);
+	beetle = getenv("BEETLE") != NULL;
+	pd4 = beetle ? avr_io_getirq(avr, AVR_IOCTL_ACOMP_GETIRQ, ACOMP_IRQ_ADC7)
+	             : avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('D'), 4);
+	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(beetle ? 'C' : 'B'), beetle ? 7 : 6),
+	                        loop_tick, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 4), ready_cb, NULL);
 	if (getenv("TRACE"))
 	  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('B'), 7), dec_tick, NULL);
-	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('3'), TIMER_IRQ_OUT_COMP + 0),
+	avr_irq_register_notify(beetle ? avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('4'), TIMER_IRQ_OUT_COMP + 1)
+	                               : avr_io_getirq(avr, AVR_IOCTL_TIMER_GETIRQ('3'), TIMER_IRQ_OUT_COMP + 0),
 	                        oc3a_changed, NULL);
 	{
 		static const char ports[6] = { 'D', 'D', 'D', 'D', 'D', 'E' };
@@ -233,15 +248,15 @@ int main(int argc, char** argv)
 		for (int b = 0; b < 6; b++)
 		  avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ(ports[b]), bits_[b]), pf_changed, (void*)(intptr_t)b);
 	}
-	/* soft UART CTS (PF7, active low): asserted, or toggled with CTS_TOGGLE */
-	cts_irq = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('F'), 7);
+	/* soft UART CTS (PF7 or PF5, active low): asserted, or toggled with CTS_TOGGLE */
+	cts_irq = avr_io_getirq(avr, AVR_IOCTL_IOPORT_GETIRQ('F'), beetle ? 5 : 7);
 	cts_toggle = getenv("CTS_TOGGLE") != NULL;
 
 	avr_irq_t* uin = avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_INPUT);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUTPUT), uart_out, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUT_XOFF), uart_xoff_cb, NULL);
 	avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('1'), UART_IRQ_OUT_XON), uart_xon_cb, NULL);
-	avr_raise_irq(pd4, 1);   /* idle line until the firmware drives PC6 */
+	rx_drive(1);   /* idle line until the firmware drives TX */
 	if (getenv("TRACE"))
 	{
 		static const int vecs[] = { 16, 17, 25, 26 };
@@ -453,8 +468,16 @@ int main(int argc, char** argv)
 	while (cs < 4 && F_CPU / presc[cs] / baud * 12 > 65000) cs++;
 	double tol = 2.0 * presc[cs] + 8;   /* + simavr step granularity (instructions, interrupt entry) */
 
-	/* 2 + 3. decode the TX pin independently and measure edge timing */
-	double bitc = F_CPU / baud;
+	/* 2 + 3. decode the TX pin independently and measure edge timing,
+	 * against the bit time the TX timer actually makes: whole ticks of
+	 * Timer3 (prescaler 1, 8, ...; 16-bit) or, on the Beetle, Timer4
+	 * (prescaler 2^n, 10-bit), as softuart.c picks them */
+	int    tx_presc = 1;
+	if (beetle)
+	  while (F_CPU / tx_presc / baud > 1023) tx_presc *= 2;
+	else
+	  for (int k = 0; k < 4 && F_CPU / presc[k] / baud > 65535; k++) tx_presc = presc[k + 1];
+	double bitc = floor(F_CPU / tx_presc / baud + 0.5) * tx_presc;
 	int    ndec = 0, dbad = 0;
 	double worst = 0;
 	int    e = 0;
