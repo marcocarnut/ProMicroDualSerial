@@ -413,11 +413,6 @@ int main(void)
 
 /* ---- LUFA events ---- */
 
-static int8_t port_of(const USB_ClassInfo_CDC_Device_t* const c)
-{
-	return (c == &cdc[0]) ? 0 : 1;
-}
-
 /* GET_LINE_CODING returns what the port actually runs (clamped and rounded
  * baud rate, 1.5 stop bits as 2), not what the host asked for. */
 static void report_line(uint8_t port)
@@ -437,68 +432,98 @@ void EVENT_USB_Device_ConfigurationChanged(void)
 	}
 }
 
-void EVENT_USB_Device_ControlRequest(void)
+static void line_coding_changed(uint8_t port, const CDC_LineEncoding_t* le)
 {
-	/* SEND_BREAK is handled here rather than by LUFA's class driver, which
-	 * truncates the 16-bit duration to 8 bits (0xFFFF = "until cleared"). */
-	if (USB_ControlRequest.bRequest == CDC_REQ_SendBreak &&
-	    USB_ControlRequest.bmRequestType == (REQDIR_HOSTTODEVICE | REQTYPE_CLASS | REQREC_INTERFACE))
-	{
-		for (uint8_t i = 0; i < NUM_PORTS; i++)
-		{
-			if (USB_ControlRequest.wIndex != cdc[i].Config.ControlInterfaceNumber)
-			  continue;
-
-			Endpoint_ClearSETUP();
-			Endpoint_ClearStatusStage();
-
-			/* the host waited for its writes to complete before asking for
-			 * the break, so what sits in the OUT bank goes out first */
-			usb_to_uart(i);
-			Endpoint_SelectEndpoint(ENDPOINT_CONTROLEP);
-
-			bridge_t* b = &bridge[i];
-			uint16_t  ms = USB_ControlRequest.wValue;
-			if (ms == 0)
-			{
-				b->pending &= ~PEND_BREAK_ON;
-				b->pending |= PEND_BREAK_OFF;
-			}
-			else
-			{
-				b->pending    &= ~PEND_BREAK_OFF;
-				b->pending    |= PEND_BREAK_ON;
-				b->break_timed = (ms != 0xFFFF);
-				b->break_ms    = ms;
-			}
-			return;
-		}
-	}
-
-	for (uint8_t i = 0; i < NUM_PORTS; i++)
-	  CDC_Device_ProcessControlRequest(&cdc[i]);
-}
-
-void EVENT_CDC_Device_LineEncodingChanged(USB_ClassInfo_CDC_Device_t* const c)
-{
-	uint8_t port = port_of(c);
-
 	/* Data already in the OUT bank was written before the change (the
 	 * host completed it before sending SET_LINE_CODING), so queue it to be
 	 * sent with the old settings. */
 	usb_to_uart(port);
 	Endpoint_SelectEndpoint(ENDPOINT_CONTROLEP);
 
-	bridge[port].line     = c->State.LineEncoding;
+	bridge[port].line     = *le;
 	bridge[port].pending |= PEND_CONFIG;
 	report_line(port);
 }
 
-void EVENT_CDC_Device_ControLineStateChanged(USB_ClassInfo_CDC_Device_t* const c)
+static void send_break(uint8_t port, uint16_t ms)
 {
+	/* the host waited for its writes to complete before asking for the
+	 * break, so what sits in the OUT bank goes out first */
+	usb_to_uart(port);
+	Endpoint_SelectEndpoint(ENDPOINT_CONTROLEP);
+
+	bridge_t* b = &bridge[port];
+	if (ms == 0)
+	{
+		b->pending &= ~PEND_BREAK_ON;
+		b->pending |= PEND_BREAK_OFF;
+	}
+	else
+	{
+		b->pending    &= ~PEND_BREAK_OFF;
+		b->pending    |= PEND_BREAK_ON;
+		b->break_timed = (ms != 0xFFFF);
+		b->break_ms    = ms;
+	}
+}
+
+void EVENT_USB_Device_ControlRequest(void)
+{
+	/* The host-to-device CDC requests are handled here rather than by
+	 * LUFA's class driver, which completes the status stage before acting
+	 * on them: the host can then send the next SETUP while the work is
+	 * still going on, and LUFA, seeing a SETUP pending when the handler
+	 * returns, stalls it as unhandled. Here the work is done first. LUFA's
+	 * driver also truncates SEND_BREAK's 16-bit duration to 8 bits
+	 * (0xFFFF = "until cleared"). */
+	if (USB_ControlRequest.bmRequestType == (REQDIR_HOSTTODEVICE | REQTYPE_CLASS | REQREC_INTERFACE))
+	{
+		for (uint8_t i = 0; i < NUM_PORTS; i++)
+		{
+			if (USB_ControlRequest.wIndex != cdc[i].Config.ControlInterfaceNumber)
+			  continue;
+
+			switch (USB_ControlRequest.bRequest)
+			{
+				case CDC_REQ_SetLineEncoding:
+				{
+					Endpoint_ClearSETUP();
+					while (!Endpoint_IsOUTReceived())
+					{
+						if (USB_DeviceState == DEVICE_STATE_Unattached)
+						  return;
+					}
+					CDC_LineEncoding_t le;
+					le.BaudRateBPS = Endpoint_Read_32_LE();
+					le.CharFormat  = Endpoint_Read_8();
+					le.ParityType  = Endpoint_Read_8();
+					le.DataBits    = Endpoint_Read_8();
+					Endpoint_ClearOUT();
+					line_coding_changed(i, &le);
+					Endpoint_ClearStatusStage();
+					return;
+				}
+
+				case CDC_REQ_SetControlLineState:
+					Endpoint_ClearSETUP();
+					cdc[i].State.ControlLineStates.HostToDevice = USB_ControlRequest.wValue;
 #if BOOTLOADER_1200BAUD_TOUCH
-	if (c == &cdc[0] && bridge[0].line.BaudRateBPS == 1200 &&
-	    !(c->State.ControlLineStates.HostToDevice & CDC_CONTROL_LINE_OUT_DTR))
-	  enter_bootloader = true;
+					if (i == 0 && bridge[0].line.BaudRateBPS == 1200 &&
+					    !(USB_ControlRequest.wValue & CDC_CONTROL_LINE_OUT_DTR))
+					  enter_bootloader = true;
 #endif
+					Endpoint_ClearStatusStage();
+					return;
+
+				case CDC_REQ_SendBreak:
+					Endpoint_ClearSETUP();
+					send_break(i, USB_ControlRequest.wValue);
+					Endpoint_ClearStatusStage();
+					return;
+			}
+		}
+	}
+
+	for (uint8_t i = 0; i < NUM_PORTS; i++)
+	  CDC_Device_ProcessControlRequest(&cdc[i]);
 }
